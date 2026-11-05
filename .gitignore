@@ -1,0 +1,24 @@
+# Rust
+/target
+**/Cargo.lock
+.lock
+*.swp
+*.swo
+*~
+*.trim
+.idea/
+.vscode/
+*.DS_Store
+
+# Artifacts (rebuild with cargo; keep the wasm only for Pages deploys)
+demoliword.wasm
+
+# Logs / temp
+*.log
+/tmp/
+recon*.png
+recon_*.png
+*.exe
+*.pdb
+assets/*.ttf
+vitacor.md
