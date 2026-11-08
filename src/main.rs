@@ -6,6 +6,8 @@ use rapier2d::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+
+
 const SCREEN_W: f32 = 1280.0;
 const SCREEN_H: f32 = 720.0;
 
@@ -203,7 +205,113 @@ const LEVELS: &[Level] = &[
     },
 ];
 
+// --- Idiomas ---
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Lang {
+    Es,
+    En,
+}
+
+static mut CURRENT_LANG: Lang = Lang::Es;
+
+#[no_mangle]
+pub extern "C" fn set_language(lang: u8) {
+    unsafe {
+        CURRENT_LANG = match lang {
+            0 => Lang::Es,
+            1 => Lang::En,
+            _ => Lang::Es,
+        };
+    }
+}
+
+fn tr(key: &str) -> String {
+    unsafe {
+        match CURRENT_LANG {
+            Lang::Es => TR_ES.get(key).copied().unwrap_or(key).to_string(),
+            Lang::En => TR_EN.get(key).copied().unwrap_or(key).to_string(),
+        }
+    }
+}
+
+static TR_ES: phf::Map<&'static str, &'static str> = phf::phf_map! {
+    "title" => "Demoliword",
+    "subtitle" => "Puzzle diario de demolicion",
+    "how_to_play" => "Como jugar",
+    "pick_blocks" => "Elegí 5 bloques A–H en el orden correcto para colapsar la estructura.",
+    "attempts" => "Tenés 6 intentos.",
+    "load_blocks" => "A–H / click cargá bloques",
+    "detonate" => "Enter detona",
+    "backspace" => "Backspace borra",
+    "retry" => "R o Enter reintenta",
+    "switch_level" => "← → o 1–6 cambia de estructura",
+    "green" => "Verde · en su posición",
+    "yellow" => "Amarillo · está, pero en otro lugar",
+    "gray" => "Gris · no está en la solución",
+    "puzzle" => "PUZZLE #",
+    "structure" => "ESTRUCTURA: ",
+    "level" => "NIVEL ",
+    "of" => " / ",
+    "attempts_label" => "INTENTOS",
+    "blocks_loaded" => "/5 BLOQUES CARGADOS",
+    "ready_to_detonate" => "LISTO PARA DETONAR",
+    "detonation" => "DETONACION ",
+    "evaluating" => "EVALUANDO COLAPSO...",
+    "perfect_collapse" => "COLAPSO PERFECTO",
+    "solution" => "SOLUCION: ",
+    "out_of_charges" => "SE ACABARON LAS CARGAS",
+    "try_again" => "ENTER / R: reintentar - FLECHAS o 1-6: otro nivel",
+    "rebuilding" => "RECONSTRUYENDO LA TORRE",
+    "detonate_btn" => "DETONAR",
+    "delete_btn" => "BORRAR",
+    "retry_btn" => "OTRA VEZ",
+};
+
+static TR_EN: phf::Map<&'static str, &'static str> = phf::phf_map! {
+    "title" => "Demoliword",
+    "subtitle" => "Daily demolition puzzle",
+    "how_to_play" => "How to Play",
+    "pick_blocks" => "Pick 5 blocks A–H in the exact order to collapse the structure.",
+    "attempts" => "You have 6 attempts.",
+    "load_blocks" => "A–H / click to load blocks",
+    "detonate" => "Enter detonates",
+    "backspace" => "Backspace deletes",
+    "retry" => "R or Enter retries",
+    "switch_level" => "← → or 1–6 changes structure",
+    "green" => "Green · correct position",
+    "yellow" => "Yellow · exists, wrong place",
+    "gray" => "Gray · not in solution",
+    "puzzle" => "PUZZLE #",
+    "structure" => "STRUCTURE: ",
+    "level" => "LEVEL ",
+    "of" => " / ",
+    "attempts_label" => "ATTEMPTS",
+    "blocks_loaded" => "/5 BLOCKS LOADED",
+    "ready_to_detonate" => "READY TO DETONATE",
+    "detonation" => "DETONATION ",
+    "evaluating" => "EVALUATING COLLAPSE...",
+    "perfect_collapse" => "PERFECT COLLAPSE",
+    "solution" => "SOLUTION: ",
+    "out_of_charges" => "OUT OF CHARGES",
+    "try_again" => "ENTER / R: retry - ARROWS or 1-6: change level",
+    "rebuilding" => "REBUILDING TOWER",
+    "detonate_btn" => "DETONATE",
+    "delete_btn" => "DELETE",
+    "retry_btn" => "AGAIN",
+};
+
+static mut DAYS_SINCE_EPOCH: i64 = 0;
+
+#[no_mangle]
+pub extern "C" fn set_daily_seed(days: i64) {
+    unsafe { DAYS_SINCE_EPOCH = days; }
+}
+
 fn days_since_epoch() -> i64 {
+    let days = unsafe { DAYS_SINCE_EPOCH };
+    if days != 0 {
+        return days;
+    }
     #[cfg(target_arch = "wasm32")]
     {
         return 0;
@@ -234,14 +342,16 @@ fn w2s(x: f32, y: f32) -> (f32, f32) {
     (ORIGIN_X + x * PPM, GROUND_SY - y * PPM)
 }
 
-fn text_center(text: &str, cx: f32, baseline_y: f32, size: f32, color: Color) {
-    let w = measure_text(text, None, size as u16, 1.0).width;
-    draw_text(text, cx - w / 2.0, baseline_y, size, color);
+fn text_center(text: impl AsRef<str>, cx: f32, baseline_y: f32, size: f32, color: Color) {
+    let s = text.as_ref();
+    let w = measure_text(s, None, size as u16, 1.0).width;
+    draw_text(s, cx - w / 2.0, baseline_y, size, color);
 }
 
-fn text_right(text: &str, rx: f32, baseline_y: f32, size: f32, color: Color) {
-    let w = measure_text(text, None, size as u16, 1.0).width;
-    draw_text(text, rx - w, baseline_y, size, color);
+fn text_right(text: impl AsRef<str>, rx: f32, baseline_y: f32, size: f32, color: Color) {
+    let s = text.as_ref();
+    let w = measure_text(s, None, size as u16, 1.0).width;
+    draw_text(s, rx - w, baseline_y, size, color);
 }
 
 fn inside(x: f32, y: f32, w: f32, h: f32, mx: f32, my: f32) -> bool {
@@ -860,6 +970,7 @@ impl Game {
     fn toast(&mut self, msg: &str) {
         self.toast_msg = msg.to_string();
         self.toast_timer = 1.7;
+        
     }
 
     fn push_letter(&mut self, ch: char) {
@@ -877,6 +988,7 @@ impl Game {
         self.selection.push(ch);
         self.select_t = 0.0;
         self.last_letter = Some(ch);
+        
     }
 
     fn pop_letter(&mut self) {
@@ -900,6 +1012,7 @@ impl Game {
         self.phase = Phase::Simulating;
         self.sim = Sim { next: 0, timer: EXPLODE_DELAY, post: SIM_TAIL };
         self.acc = 0.0;
+        
     }
 
     fn finish_attempt(&mut self) {
@@ -1041,6 +1154,7 @@ impl Game {
                 } else {
                     self.sim.post -= dt;
                     if self.sim.post <= 0.0 {
+                        
                         self.finish_attempt();
                     }
                 }
@@ -1049,8 +1163,11 @@ impl Game {
                 if self.reveal_t >= 0.85 {
                     self.phase = self.next_phase;
                     self.reveal_row = None;
-                    if self.phase == Phase::Resetting {
-                        self.reset_timer = RESET_TIME;
+                    match self.phase {
+                        Phase::Won => {}
+                        Phase::Lost => {}
+                        Phase::Resetting => { self.reset_timer = RESET_TIME; }
+                        _ => {}
                     }
                 }
             }
@@ -1442,7 +1559,7 @@ impl Game {
 
         let puzzle = format!("PUZZLE #{}", days_since_epoch());
         text_right(&puzzle, VIEW_W - 30.0, 56.0, 18.0, C_DIM);
-        let lvl = format!("NIVEL {} / {}", self.level_idx + 1, LEVELS.len());
+        let lvl = format!("{}{} {}{}", tr("level"), self.level_idx + 1, tr("of"), LEVELS.len());
         text_right(&lvl, VIEW_W - 30.0, 86.0, 18.0, C_FAINT);
 
         if self.phase == Phase::Planning {
@@ -1455,16 +1572,16 @@ impl Game {
                     C_ACCENT,
                 );
             } else {
-                let msg = format!("{}/5 BLOQUES CARGADOS", self.selection.len());
+                let msg = format!("{}{}", self.selection.len(), tr("blocks_loaded"));
                 draw_text(&msg, 30.0, 560.0, 19.0, C_DIM);
             }
         }
 
         if self.phase == Phase::Simulating {
             let label = if self.sim.next < SOLUTION_LEN {
-                format!("DETONACION {} / {}", self.sim.next + 1, SOLUTION_LEN)
+                format!("{}{} / {}", tr("detonation"), self.sim.next + 1, SOLUTION_LEN)
             } else {
-                "EVALUANDO COLAPSO...".to_string()
+                tr("evaluating").to_string()
             };
             let w = measure_text(&label, None, 20, 1.0).width + 40.0;
             draw_rectangle(VIEW_W / 2.0 - w / 2.0, 112.0, w, 38.0, Color {
@@ -1555,7 +1672,7 @@ impl Game {
         let t = get_time() as f32;
         let (mx, my) = mouse_view();
 
-        draw_text("INTENTOS", PANEL_X + 20.0, 52.0, 26.0, C_WHITE);
+        draw_text(tr("attempts_label"), PANEL_X + 20.0, 52.0, 26.0, C_WHITE);
         let n = (self.attempts_used
             + if self.phase == Phase::Planning { 1 } else { 0 })
         .min(MAX_ATTEMPTS);
@@ -1805,7 +1922,7 @@ impl Game {
                 });
 
                 if self.phase == Phase::Won {
-                    text_center("COLAPSO PERFECTO", VIEW_W / 2.0, 296.0, 52.0, C_ACCENT);
+                    text_center(tr("perfect_collapse"), VIEW_W / 2.0, 296.0, 52.0, C_ACCENT);
                     let sub = format!(
                         "Derribaste la estructura en {} intento{}.",
                         self.attempts_used,
@@ -1813,7 +1930,7 @@ impl Game {
                     );
                     text_center(&sub, VIEW_W / 2.0, 336.0, 22.0, C_WHITE);
                 } else {
-                    text_center("SE ACABARON LAS CARGAS", VIEW_W / 2.0, 296.0, 46.0, C_RED);
+                    text_center(tr("out_of_charges"), VIEW_W / 2.0, 296.0, 46.0, C_RED);
                     text_center(
                         "La secuencia correcta era:",
                         VIEW_W / 2.0,
