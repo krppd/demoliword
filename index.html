@@ -297,7 +297,9 @@
         switch: "← → o 1–6 cambia de estructura",
         green: "Verde · en su posición",
         yellow: "Amarillo · está, pero en otro lugar",
-        gray: "Gris · no está en la solución"
+        gray: "Gris · no está en la solución",
+        win: "¡COLAPSO PERFECTO! Vuelve mañana para otro puzzle.",
+        lose: "SE ACABARON LAS CARGAS. Vuelve mañana para intentarlo de nuevo."
       },
       en: {
         subtitle: "Daily demolition puzzle",
@@ -310,9 +312,51 @@
         switch: "← → or 1–6 changes structure",
         green: "Green · correct position",
         yellow: "Yellow · exists, wrong place",
-        gray: "Gray · not in solution"
+        gray: "Gray · not in solution",
+        win: "PERFECT COLLAPSE! Come back tomorrow for another puzzle.",
+        lose: "OUT OF CHARGES. Come back tomorrow to try again."
       }
     };
+
+    let currentLang = 'es';
+    let wasmExports = null;
+
+    // Capturar wasm_exports cuando macroquad lo exponga
+    const originalLoad = window.load;
+    window.load = function(...args) {
+      return originalLoad.apply(this, args).then(() => {
+        // macroquad expone wasm_exports en Module.exports o Module.wasmExports
+        if (typeof Module !== 'undefined' && Module.exports) {
+          window.wasmExports = Module.exports;
+        } else if (typeof Module !== 'undefined' && Module.wasmExports) {
+          window.wasmExports = Module.wasmExports;
+        } else if (typeof wasm_exports !== 'undefined') {
+          window.wasmExports = wasm_exports;
+        }
+        injectDailySeed();
+        syncLanguage();
+      });
+      return originalLoad.apply(this, args);
+    };
+
+    function callWasm(fnName, ...args) {
+      if (window.wasmExports && typeof window.wasmExports[fnName] === 'function') {
+        window.wasmExports[fnName](...args);
+      } else if (typeof Module !== 'undefined' && Module[fnName]) {
+        Module[fnName](...args);
+      }
+    }
+
+    function injectDailySeed() {
+      const epoch = new Date(1970, 0, 1);
+      const today = new Date();
+      const daysSinceEpoch = Math.floor((today - epoch) / 86400000);
+      callWasm('set_daily_seed', daysSinceEpoch);
+    }
+
+    function syncLanguage() {
+      callWasm('set_language', currentLang === 'es' ? 0 : 1);
+    }
 
     let currentLang = 'es';
     function setLang(lang) {
@@ -322,23 +366,12 @@
       document.getElementById('web-howto').textContent = t.howto;
       document.getElementById('web-pick').innerHTML = t.pick;
       document.querySelectorAll('.lang-btn').forEach(b => b.classList.toggle('active', b.dataset.lang === lang));
-      // Notificar al WASM
-      if (typeof set_language === 'function') set_language(lang === 'es' ? 0 : 1);
-      else if (typeof Module !== 'undefined' && typeof Module.set_language === 'function') Module.set_language(lang === 'es' ? 0 : 1);
+      callWasm('set_language', lang === 'es' ? 0 : 1);
     }
 
     document.getElementById('lang-es').addEventListener('click', () => setLang('es'));
     document.getElementById('lang-en').addEventListener('click', () => setLang('en'));
 
-    // Inyectar el indice diario antes de cargar el WASM
-    const epoch = new Date(1970, 0, 1);
-    const today = new Date();
-    const daysSinceEpoch = Math.floor((today - epoch) / 86400000);
-    if (typeof set_daily_seed === 'function') {
-      set_daily_seed(daysSinceEpoch);
-    } else if (typeof Module !== 'undefined' && typeof Module.set_daily_seed === 'function') {
-      Module.set_daily_seed(daysSinceEpoch);
-    }
     load("demoliword.wasm");
   </script>
 </body>
