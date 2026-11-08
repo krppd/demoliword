@@ -102,6 +102,42 @@
     max-width: 1200px;
     min-height: 0;
   }
+
+  .stage {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    order: 2;
+  }
+
+  .frame {
+    padding: 6px;
+    border: 1px solid var(--edge);
+    border-radius: 10px;
+    background: var(--panel);
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(242, 140, 38, 0.06) inset;
+    line-height: 0;
+    flex: 0 0 auto;
+    max-width: 100%;
+    max-height: 100%;
+    box-sizing: border-box;
+  }
+
+  canvas#glcanvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    outline: none;
+    border-radius: 6px;
+    background: #000000;
+    touch-action: none;
+  }
+
   aside.how {
     flex: 0 0 auto;
     width: 100%;
@@ -114,7 +150,7 @@
     line-height: 1.7;
     color: var(--dim);
     text-align: center;
-    order: 2;
+    order: 1;
   }
   aside.how h2 {
     margin: 0 0 8px;
@@ -143,36 +179,6 @@
   aside.how ul { margin: 8px 0 0; padding-left: 0; list-style: none; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
   aside.how li { margin-bottom: 0; }
 
-  .stage {
-    flex: 1 1 auto;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    order: 1;
-  }
-  .frame {
-    padding: 6px;
-    border: 1px solid var(--edge);
-    border-radius: 10px;
-    background: var(--panel);
-    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(242, 140, 38, 0.06) inset;
-    line-height: 0;
-    max-width: 100%;
-    max-height: 100%;
-  }
-  canvas#glcanvas {
-    display: block;
-    width: min(98vw, calc(100vh - 180px) * 16 / 9);
-    aspect-ratio: 16 / 9;
-    max-height: 100%;
-    outline: none;
-    border-radius: 6px;
-    background: #000000;
-    touch-action: none;
-  }
-
   @keyframes floaty {
     0%, 100% { transform: translateY(0) rotate(-1.5deg); }
     50%      { transform: translateY(-8px) rotate(1.5deg); }
@@ -184,11 +190,22 @@
   @media (prefers-reduced-motion: reduce) {
     .logo, .title .b { animation: none; }
   }
+  @media (max-width: 480px) {
+    .title h1 { font-size: 20px; letter-spacing: 0.12em; }
+    .logo { width: 44px; height: 44px; }
+    .tag { font-size: 9px; letter-spacing: 0.18em; }
+    .lang-btn { padding: 5px 9px; }
+    aside.how { font-size: 11px; padding: 6px 8px; }
+    aside.how ul { gap: 4px; }
+  }
   @media (min-width: 721px) {
     .main {
       flex-direction: row;
       align-items: stretch;
       gap: 14px;
+    }
+    .stage {
+      order: 2;
     }
     aside.how {
       flex: 0 0 220px;
@@ -203,7 +220,7 @@
       line-height: 1.7;
       color: var(--dim);
       text-align: left;
-      order: 2;
+      order: 1;
     }
     aside.how h2 {
       margin: 0 0 10px;
@@ -227,18 +244,6 @@
     }
     aside.how ul { margin: 10px 0 0; padding-left: 16px; list-style: disc; display: block; justify-content: flex-start; gap: 0; }
     aside.how li { margin-bottom: 4px; }
-
-    .stage {
-      flex: 1 1 auto;
-      min-width: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      order: 1;
-    }
-    canvas#glcanvas {
-      width: min(calc(100vw - 270px), calc((100vh - 120px) * 16 / 9));
-    }
   }
 </style>
 </head>
@@ -263,15 +268,15 @@
       <h2 id="web-howto">Como jugar</h2>
       <p id="web-pick">Elegí 5 bloques <b>A–H</b> en el orden correcto para colapsar la estructura. Tenés <b>6 intentos</b>.</p>
       <ul>
-        <li><span class="key">A</span>…<span class="key">H</span> / click cargá bloques</li>
-        <li><span class="key">Enter</span> detona · <span class="key">Backspace</span> borra</li>
-        <li><span class="key">R</span> o <span class="key">Enter</span> reintenta</li>
-        <li><span class="key">←</span> <span class="key">→</span> o <span class="key">1</span>–<span class="key">6</span> cambia de estructura</li>
+        <li id="web-load"><span class="key">A</span>…<span class="key">H</span> / click cargá bloques</li>
+        <li id="web-keys"><span class="key">Enter</span> detona · <span class="key">Backspace</span> borra</li>
+        <li id="web-retry"><span class="key">R</span> o <span class="key">Enter</span> reintenta</li>
+        <li id="web-switch"><span class="key">←</span> <span class="key">→</span> o <span class="key">1</span>–<span class="key">6</span> cambia de estructura</li>
       </ul>
       <div style="margin-top:12px; padding-top:4px;">
-        <div><span class="g">Verde</span> · en su posición</div>
-        <div><span class="y">Amarillo</span> · está, pero en otro lugar</div>
-        <div><span class="gr">Gris</span> · no está en la solución</div>
+        <div id="web-green"><span class="g">Verde</span> · en su posición</div>
+        <div id="web-yellow"><span class="y">Amarillo</span> · está, pero en otro lugar</div>
+        <div id="web-gray"><span class="gr">Gris</span> · no está en la solución</div>
       </div>
     </aside>
 
@@ -290,14 +295,13 @@
         subtitle: "Puzzle diario de demolicion",
         howto: "Como jugar",
         pick: "Elegí 5 bloques <b>A–H</b> en el orden correcto para colapsar la estructura. Tenés <b>6 intentos</b>.",
-        load: "A–H / click cargá bloques",
-        detonate: "Enter detona",
-        backspace: "Backspace borra",
-        retry: "R o Enter reintenta",
-        switch: "← → o 1–6 cambia de estructura",
-        green: "Verde · en su posición",
-        yellow: "Amarillo · está, pero en otro lugar",
-        gray: "Gris · no está en la solución",
+        load: "<span class=\"key\">A</span>…<span class=\"key\">H</span> / click cargá bloques",
+        keys: "<span class=\"key\">Enter</span> detona · <span class=\"key\">Backspace</span> borra",
+        retry: "<span class=\"key\">R</span> o <span class=\"key\">Enter</span> reintenta",
+        switch: "<span class=\"key\">←</span> <span class=\"key\">→</span> o <span class=\"key\">1</span>–<span class=\"key\">6</span> cambia de estructura",
+        green: "<span class=\"g\">Verde</span> · en su posición",
+        yellow: "<span class=\"y\">Amarillo</span> · está, pero en otro lugar",
+        gray: "<span class=\"gr\">Gris</span> · no está en la solución",
         win: "¡COLAPSO PERFECTO! Vuelve mañana para otro puzzle.",
         lose: "SE ACABARON LAS CARGAS. Vuelve mañana para intentarlo de nuevo."
       },
@@ -305,52 +309,30 @@
         subtitle: "Daily demolition puzzle",
         howto: "How to Play",
         pick: "Pick 5 blocks <b>A–H</b> in the exact order to collapse the structure. You have <b>6 attempts</b>.",
-        load: "A–H / click to load blocks",
-        detonate: "Enter detonates",
-        backspace: "Backspace deletes",
-        retry: "R or Enter retries",
-        switch: "← → or 1–6 changes structure",
-        green: "Green · correct position",
-        yellow: "Yellow · exists, wrong place",
-        gray: "Gray · not in solution",
+        load: "<span class=\"key\">A</span>…<span class=\"key\">H</span> / click to load blocks",
+        keys: "<span class=\"key\">Enter</span> detonates · <span class=\"key\">Backspace</span> deletes",
+        retry: "<span class=\"key\">R</span> or <span class=\"key\">Enter</span> retries",
+        switch: "<span class=\"key\">←</span> <span class=\"key\">→</span> or <span class=\"key\">1</span>–<span class=\"key\">6</span> changes structure",
+        green: "<span class=\"g\">Green</span> · correct position",
+        yellow: "<span class=\"y\">Yellow</span> · exists, wrong place",
+        gray: "<span class=\"gr\">Gray</span> · not in solution",
         win: "PERFECT COLLAPSE! Come back tomorrow for another puzzle.",
         lose: "OUT OF CHARGES. Come back tomorrow to try again."
       }
     };
 
     let currentLang = 'es';
-    let wasmExports = null;
-
-    // Capturar wasm_exports cuando macroquad lo exponga
-    const originalLoad = window.load;
-    window.load = function(...args) {
-      return originalLoad.apply(this, args).then(() => {
-        // macroquad expone wasm_exports en Module.exports o Module.wasmExports
-        if (typeof Module !== 'undefined' && Module.exports) {
-          window.wasmExports = Module.exports;
-        } else if (typeof Module !== 'undefined' && Module.wasmExports) {
-          window.wasmExports = Module.wasmExports;
-        } else if (typeof wasm_exports !== 'undefined') {
-          window.wasmExports = wasm_exports;
-        }
-        injectDailySeed();
-        syncLanguage();
-      });
-      return originalLoad.apply(this, args);
-    };
 
     function callWasm(fnName, ...args) {
-      if (window.wasmExports && typeof window.wasmExports[fnName] === 'function') {
-        window.wasmExports[fnName](...args);
-      } else if (typeof Module !== 'undefined' && Module[fnName]) {
+      if (typeof wasm_exports !== 'undefined' && wasm_exports && typeof wasm_exports[fnName] === 'function') {
+        wasm_exports[fnName](...args);
+      } else if (typeof Module !== 'undefined' && Module && typeof Module[fnName] === 'function') {
         Module[fnName](...args);
       }
     }
 
     function injectDailySeed() {
-      const epoch = new Date(1970, 0, 1);
-      const today = new Date();
-      const daysSinceEpoch = Math.floor((today - epoch) / 86400000);
+      const daysSinceEpoch = Math.floor(Date.now() / 86400000);
       callWasm('set_daily_seed', daysSinceEpoch);
     }
 
@@ -358,13 +340,28 @@
       callWasm('set_language', currentLang === 'es' ? 0 : 1);
     }
 
-    let currentLang = 'es';
+    // macroquad asigna wasm_exports de forma asincrona tras cargar el modulo
+    function waitForWasm(cb) {
+      if (typeof wasm_exports !== 'undefined' && wasm_exports && typeof wasm_exports.set_daily_seed === 'function') {
+        cb();
+      } else {
+        setTimeout(() => waitForWasm(cb), 30);
+      }
+    }
+
     function setLang(lang) {
       currentLang = lang;
       const t = TR[lang];
       document.getElementById('web-subtitle').textContent = t.subtitle;
       document.getElementById('web-howto').textContent = t.howto;
       document.getElementById('web-pick').innerHTML = t.pick;
+      document.getElementById('web-load').innerHTML = t.load;
+      document.getElementById('web-keys').innerHTML = t.keys;
+      document.getElementById('web-retry').innerHTML = t.retry;
+      document.getElementById('web-switch').innerHTML = t.switch;
+      document.getElementById('web-green').innerHTML = t.green;
+      document.getElementById('web-yellow').innerHTML = t.yellow;
+      document.getElementById('web-gray').innerHTML = t.gray;
       document.querySelectorAll('.lang-btn').forEach(b => b.classList.toggle('active', b.dataset.lang === lang));
       callWasm('set_language', lang === 'es' ? 0 : 1);
     }
@@ -372,7 +369,116 @@
     document.getElementById('lang-es').addEventListener('click', () => setLang('es'));
     document.getElementById('lang-en').addEventListener('click', () => setLang('en'));
 
+    // Ajustar el canvas al espacio real disponible (16:9), sin salirse de pantalla
+    function fitCanvas() {
+      const stage = document.querySelector('.stage');
+      const frame = document.querySelector('.frame');
+      if (!stage || !frame) return;
+      const ratio = 16 / 9;
+      const chrome = 14; // padding 6+6 + borde 1+1
+      const availW = stage.clientWidth;
+      const availH = stage.clientHeight;
+      if (availW < 60 || availH < 60) return;
+      const cw = Math.min(availW - chrome, (availH - chrome) * ratio);
+      if (cw < 60) return;
+      const ch = cw / ratio;
+      frame.style.width = Math.round(cw + chrome) + 'px';
+      frame.style.height = Math.round(ch + chrome) + 'px';
+      if (typeof wasm_exports !== 'undefined' && wasm_exports) {
+        window.dispatchEvent(new Event('resize'));
+      }
+    }
+
+    let fitQueued = false;
+    function scheduleFit() {
+      if (fitQueued) return;
+      fitQueued = true;
+      requestAnimationFrame(() => { fitQueued = false; fitCanvas(); });
+    }
+
+    const stageEl = document.querySelector('.stage');
+    if (stageEl && 'ResizeObserver' in window) new ResizeObserver(scheduleFit).observe(stageEl);
+    window.addEventListener('resize', scheduleFit);
+    window.addEventListener('orientationchange', scheduleFit);
+    scheduleFit();
+
     load("demoliword.wasm");
+    waitForWasm(() => {
+      injectDailySeed();
+      syncLanguage();
+      scheduleFit();
+    });
+  </script>
+  <script>
+    // Web Audio API para sonidos en la web
+    let audioCtx = null;
+    function getAudioCtx() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      return audioCtx;
+    }
+
+    function playTone(freq, duration, type = 'sine', volume = 0.3, when = 0) {
+      const ctx = getAudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = type;
+      osc.frequency.value = freq;
+      gain.gain.value = volume;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      const now = ctx.currentTime + when;
+      osc.start(now);
+      osc.stop(now + duration);
+    }
+
+    function playNoise(duration, volume = 0.4, when = 0) {
+      const ctx = getAudioCtx();
+      const bufferSize = ctx.sampleRate * duration;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = (Math.random() * 2 - 1) * volume;
+      }
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      const gain = ctx.createGain();
+      gain.gain.value = volume;
+      source.connect(gain);
+      gain.connect(ctx.destination);
+      const now = ctx.currentTime + when;
+      source.start(now);
+      source.stop(now + duration);
+    }
+
+    // API para que el WASM llame (expone funciones globales)
+    window.playClick = () => { playTone(880, 0.08, 'sine', 0.3); };
+    window.playDetonate = () => { playNoise(0.3, 0.5); };
+    window.playCollapse = () => { playNoise(0.8, 0.4); };
+    window.playWin = () => { playTone(660, 0.5, 'sine', 0.4); playTone(880, 0.5, 'sine', 0.2, 0.12); };
+    window.playLose = () => { playTone(220, 0.6, 'sine', 0.4); };
+    window.playToast = () => { playTone(1320, 0.2, 'sine', 0.25); };
+
+    // Desbloquear el audio con el primer gesto del usuario
+    ['pointerdown', 'keydown'].forEach((ev) =>
+      window.addEventListener(ev, () => getAudioCtx().resume(), { passive: true })
+    );
+
+    // El juego avisa que sonar via take_sound_event (1 cargar, 2 borrar, 3 detonar, 4 ganar, 5 perder, 6 aviso)
+    const SOUNDS = {
+      1: window.playClick,
+      2: window.playClick,
+      3: window.playDetonate,
+      4: window.playWin,
+      5: window.playLose,
+      6: window.playToast,
+    };
+    setInterval(() => {
+      if (typeof wasm_exports === 'undefined' || !wasm_exports) return;
+      if (typeof wasm_exports.take_sound_event !== 'function') return;
+      const ev = wasm_exports.take_sound_event();
+      if (ev && SOUNDS[ev]) SOUNDS[ev]();
+    }, 40);
   </script>
 </body>
 </html>

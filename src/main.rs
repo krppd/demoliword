@@ -257,9 +257,14 @@ static TR_ES: phf::Map<&'static str, &'static str> = phf::phf_map! {
     "ready_to_detonate" => "LISTO PARA DETONAR",
     "detonation" => "DETONACION ",
     "evaluating" => "EVALUANDO COLAPSO...",
-    "perfect_collapse" => "COLAPSO PERFECTO",
+    "perfect_collapse" => "¡COLAPSO PERFECTO!",
     "solution" => "SOLUCION: ",
     "out_of_charges" => "SE ACABARON LAS CARGAS",
+    "come_back" => "Vuelve mañana para otro puzzle.",
+    "solution_was" => "La secuencia correcta era:",
+    "collapsed_in" => "Derribaste la estructura en",
+    "attempt_singular" => "intento.",
+    "attempt_plural" => "intentos.",
     "try_again" => "ENTER / R: reintentar - FLECHAS o 1-6: otro nivel",
     "rebuilding" => "RECONSTRUYENDO LA TORRE",
     "detonate_btn" => "DETONAR",
@@ -290,9 +295,14 @@ static TR_EN: phf::Map<&'static str, &'static str> = phf::phf_map! {
     "ready_to_detonate" => "READY TO DETONATE",
     "detonation" => "DETONATION ",
     "evaluating" => "EVALUATING COLLAPSE...",
-    "perfect_collapse" => "PERFECT COLLAPSE",
+    "perfect_collapse" => "PERFECT COLLAPSE!",
     "solution" => "SOLUTION: ",
     "out_of_charges" => "OUT OF CHARGES",
+    "come_back" => "Come back tomorrow for another puzzle.",
+    "solution_was" => "The correct sequence was:",
+    "collapsed_in" => "You collapsed the structure in",
+    "attempt_singular" => "attempt.",
+    "attempt_plural" => "attempts.",
     "try_again" => "ENTER / R: retry - ARROWS or 1-6: change level",
     "rebuilding" => "REBUILDING TOWER",
     "detonate_btn" => "DETONATE",
@@ -301,10 +311,24 @@ static TR_EN: phf::Map<&'static str, &'static str> = phf::phf_map! {
 };
 
 static mut DAYS_SINCE_EPOCH: i64 = 0;
+static mut SOUND_EVENT: i32 = 0;
 
 #[no_mangle]
 pub extern "C" fn set_daily_seed(days: i64) {
     unsafe { DAYS_SINCE_EPOCH = days; }
+}
+
+#[no_mangle]
+pub extern "C" fn take_sound_event() -> i32 {
+    unsafe {
+        let ev = SOUND_EVENT;
+        SOUND_EVENT = 0;
+        ev
+    }
+}
+
+fn emit_sound(id: i32) {
+    unsafe { SOUND_EVENT = id; }
 }
 
 fn days_since_epoch() -> i64 {
@@ -326,7 +350,13 @@ fn days_since_epoch() -> i64 {
 }
 
 fn get_daily_level_index() -> usize {
-    (days_since_epoch().rem_euclid(LEVELS.len() as i64)) as usize
+    (puzzle_number().rem_euclid(LEVELS.len() as i64)) as usize
+}
+
+const PUZZLE_EPOCH_DAYS: i64 = 20_454;
+
+fn puzzle_number() -> i64 {
+    (days_since_epoch() - PUZZLE_EPOCH_DAYS).max(0)
 }
 
 
@@ -906,6 +936,7 @@ struct Flash {
 
 struct Game {
     level_idx: usize,
+    seed_applied: i64,
     world: World,
     attempts_used: usize,
     history: Vec<([char; SOLUTION_LEN], [Feedback; SOLUTION_LEN])>,
@@ -934,6 +965,7 @@ impl Game {
         let level_idx = level_idx % LEVELS.len();
         Game {
             level_idx,
+            seed_applied: days_since_epoch(),
             world: World::new(&LEVELS[level_idx]),
             attempts_used: 0,
             history: Vec::new(),
@@ -970,7 +1002,7 @@ impl Game {
     fn toast(&mut self, msg: &str) {
         self.toast_msg = msg.to_string();
         self.toast_timer = 1.7;
-        
+        emit_sound(6);
     }
 
     fn push_letter(&mut self, ch: char) {
@@ -988,12 +1020,13 @@ impl Game {
         self.selection.push(ch);
         self.select_t = 0.0;
         self.last_letter = Some(ch);
-        
+        emit_sound(1);
     }
 
     fn pop_letter(&mut self) {
-        if self.phase == Phase::Planning {
+        if self.phase == Phase::Planning && !self.selection.is_empty() {
             self.selection.pop();
+            emit_sound(2);
         }
     }
 
@@ -1012,7 +1045,7 @@ impl Game {
         self.phase = Phase::Simulating;
         self.sim = Sim { next: 0, timer: EXPLODE_DELAY, post: SIM_TAIL };
         self.acc = 0.0;
-        
+        emit_sound(3);
     }
 
     fn finish_attempt(&mut self) {
@@ -1024,8 +1057,10 @@ impl Game {
         self.reveal_t = 0.0;
 
         self.next_phase = if feedback.iter().all(|f| *f == Feedback::Green) {
+            emit_sound(4);
             Phase::Won
         } else if self.attempts_used >= MAX_ATTEMPTS {
+            emit_sound(5);
             Phase::Lost
         } else {
             Phase::Resetting
@@ -1109,6 +1144,12 @@ impl Game {
 
 
     fn update(&mut self, dt: f32) {
+        let daily = days_since_epoch();
+        if daily != 0 && daily != self.seed_applied {
+            self.seed_applied = daily;
+            self.load_level(get_daily_level_index());
+        }
+
         self.handle_input(dt);
 
         if self.toast_timer > 0.0 {
@@ -1557,7 +1598,7 @@ impl Game {
 
         draw_text(self.level().name, 30.0, 86.0, 18.0, C_DIM);
 
-        let puzzle = format!("PUZZLE #{}", days_since_epoch());
+        let puzzle = format!("{}{}", tr("puzzle"), puzzle_number());
         text_right(&puzzle, VIEW_W - 30.0, 56.0, 18.0, C_DIM);
         let lvl = format!("{}{} {}{}", tr("level"), self.level_idx + 1, tr("of"), LEVELS.len());
         text_right(&lvl, VIEW_W - 30.0, 86.0, 18.0, C_FAINT);
@@ -1565,7 +1606,7 @@ impl Game {
         if self.phase == Phase::Planning {
             if self.selection.len() == SOLUTION_LEN {
                 text_center(
-                    "LISTO PARA DETONAR",
+                    tr("ready_to_detonate"),
                     VIEW_W / 2.0,
                     560.0,
                     21.0,
@@ -1904,7 +1945,7 @@ impl Game {
                     a: 0.42,
                 });
                 text_center(
-                    "RECONSTRUYENDO LA TORRE",
+                    tr("rebuilding"),
                     VIEW_W / 2.0,
                     336.0,
                     26.0,
@@ -1924,20 +1965,17 @@ impl Game {
                 if self.phase == Phase::Won {
                     text_center(tr("perfect_collapse"), VIEW_W / 2.0, 296.0, 52.0, C_ACCENT);
                     let sub = format!(
-                        "Derribaste la estructura en {} intento{}.",
+                        "{} {} {}",
+                        tr("collapsed_in"),
                         self.attempts_used,
-                        if self.attempts_used == 1 { "" } else { "s" }
+                        if self.attempts_used == 1 { tr("attempt_singular") } else { tr("attempt_plural") }
                     );
                     text_center(&sub, VIEW_W / 2.0, 336.0, 22.0, C_WHITE);
+                    text_center(tr("come_back"), VIEW_W / 2.0, 358.0, 18.0, C_WHITE);
                 } else {
                     text_center(tr("out_of_charges"), VIEW_W / 2.0, 296.0, 46.0, C_RED);
-                    text_center(
-                        "La secuencia correcta era:",
-                        VIEW_W / 2.0,
-                        338.0,
-                        22.0,
-                        C_WHITE,
-                    );
+                    text_center(tr("solution_was"), VIEW_W / 2.0, 336.0, 22.0, C_WHITE);
+                    text_center(tr("come_back"), VIEW_W / 2.0, 358.0, 18.0, C_WHITE);
                 }
 
                 let chip = 54.0;
