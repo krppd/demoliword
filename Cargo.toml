@@ -3,8 +3,8 @@ name = "demoliword"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Puzzle diario de demolicion: colapsa la estructura con 5 cargas en el orden correcto (Wordle fisico)."
-repository = "https://github.com/USER/demoliword"
+description = "Daily demolition puzzle: collapse the structure with 5 charges in the right order (physical Wordle)."
+repository = "https://github.com/krppd/demoliword"
 
 [dependencies]
 macroquad = { version = "0.4", features = [] }
