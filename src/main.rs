@@ -3,6 +3,8 @@ use macroquad::prelude::*;
 use macroquad::shapes::DrawRectangleParams;
 use rapier2d::prelude::*;
 
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicUsize, Ordering};
+
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,7 +23,7 @@ const PPM: f32 = 110.0;
 const FIXED_DT: f32 = 1.0 / 60.0;
 const GRAVITY: f32 = 12.0;
 
-const MAX_ATTEMPTS: usize = 6;
+const MAX_ATTEMPTS: usize = 3;
 const SOLUTION_LEN: usize = 5;
 const EXPLODE_INTERVAL: f32 = 0.8;
 const EXPLODE_DELAY: f32 = 0.35;
@@ -32,7 +34,7 @@ const BLAST_RADIUS: f32 = 1.9;
 const BLAST_POWER: f32 = 4.0;
 
 const GX0: f32 = 899.0;
-const GY0: f32 = 112.0;
+const GY0: f32 = 140.0;
 const CELL: f32 = 60.0;
 const CELL_GAP: f32 = 8.0;
 const ROW_PITCH: f32 = 68.0;
@@ -103,254 +105,788 @@ struct BlockSpec {
 struct Level {
     name: &'static str,
     blocks: &'static [BlockSpec],
-    solution: [char; SOLUTION_LEN],
 }
 
+fn supports(x: &BlockSpec, y: &BlockSpec) -> bool {
+    let y_bottom = y.y - y.hy;
+    let x_top = x.y + x.hy;
+    let overlap = (x.x - x.hx) < (y.x + y.hx) - 0.01 && (x.x + x.hx) > (y.x - y.hx) + 0.01;
+    overlap && (y_bottom - x_top).abs() < 0.06
+}
+
+fn structural_blocks(level: &Level) -> Vec<char> {
+    let crown = level
+        .blocks
+        .iter()
+        .max_by(|a, b| (a.y + a.hy).partial_cmp(&(b.y + b.hy)).unwrap())
+        .map(|b| b.id)
+        .unwrap_or('A');
+
+    let mut core = vec![crown];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for b in level.blocks {
+            if core.contains(&b.id) {
+                continue;
+            }
+            let linked = core.iter().any(|other| {
+                let ob = level.blocks.iter().find(|x| x.id == *other).unwrap();
+                supports(ob, b) || supports(b, ob)
+            });
+            if linked {
+                core.push(b.id);
+                changed = true;
+            }
+        }
+    }
+    core
+}
+
+fn block_role(level: &Level, id: char) -> Option<bool> {
+    if !level.blocks.iter().any(|x| x.id == id) {
+        return None;
+    }
+    let structural = structural_blocks(level);
+    if !structural.contains(&id) {
+        return None;
+    }
+    let holds_something = structural
+        .iter()
+        .any(|other| *other != id && holds_transitively(level, id, *other));
+    if holds_something {
+        Some(true)
+    } else {
+        Some(false)
+    }
+}
+
+fn holds_transitively(level: &Level, id: char, target: char) -> bool {
+    let mut frontier = vec![id];
+    let mut visited: Vec<char> = vec![id];
+    while let Some(cur) = frontier.pop() {
+        let Some(cb) = level.blocks.iter().find(|x| x.id == cur) else {
+            continue;
+        };
+        for other in level.blocks.iter() {
+            if other.id == cur || visited.contains(&other.id) {
+                continue;
+            }
+            if !supports(cb, other) {
+                continue;
+            }
+            if other.id == target {
+                return true;
+            }
+            visited.push(other.id);
+            frontier.push(other.id);
+        }
+    }
+    false
+}
+
+fn key_blocks(level: &Level) -> Vec<char> {
+    let structural = structural_blocks(level);
+    structural
+        .iter()
+        .copied()
+        .filter(|id| {
+            structural
+                .iter()
+                .any(|other| other != id && holds_transitively(level, *id, *other))
+        })
+        .collect()
+}
+
+#[allow(dead_code)]
+fn support_count(level: &Level, id: char) -> usize {
+    let Some(b) = level.blocks.iter().find(|x| x.id == id) else {
+        return 0;
+    };
+    level.blocks.iter().filter(|o| o.id != id && supports(b, o)).count()
+}
+
+fn target_blocks_for(level: &Level) -> Vec<char> {
+    let mut keys = key_blocks(level);
+    if keys.len() < SOLUTION_LEN {
+        for id in structural_blocks(level) {
+            if keys.len() >= SOLUTION_LEN {
+                break;
+            }
+            if !keys.contains(&id) {
+                keys.push(id);
+            }
+        }
+    }
+    keys.truncate(SOLUTION_LEN);
+    keys
+}
+
+fn core_blocks(level: &Level) -> Vec<char> {
+    let mut core = structural_blocks(level);
+    core.truncate(SOLUTION_LEN);
+    core
+}
+
+
 const LEVEL_0_BLOCKS: &[BlockSpec] = &[
-    BlockSpec { id: 'A', x: -0.55, y: 0.50, hx: 0.28, hy: 0.50 },
-    BlockSpec { id: 'B', x: -0.55, y: 1.50, hx: 0.28, hy: 0.50 },
-    BlockSpec { id: 'C', x: -0.55, y: 2.50, hx: 0.28, hy: 0.50 },
-    BlockSpec { id: 'D', x: 0.55, y: 0.50, hx: 0.28, hy: 0.50 },
-    BlockSpec { id: 'E', x: 0.55, y: 1.50, hx: 0.28, hy: 0.50 },
-    BlockSpec { id: 'F', x: 0.55, y: 2.50, hx: 0.28, hy: 0.50 },
-    BlockSpec { id: 'G', x: 0.00, y: 3.22, hx: 1.05, hy: 0.22 },
-    BlockSpec { id: 'H', x: 0.00, y: 3.74, hx: 0.40, hy: 0.30 },
+    BlockSpec { id: 'A', x:  0.00, y: 0.45, hx: 0.35, hy: 0.45 },
+    BlockSpec { id: 'B', x:  0.00, y: 1.35, hx: 0.35, hy: 0.45 },
+    BlockSpec { id: 'C', x:  0.00, y: 2.25, hx: 0.35, hy: 0.45 },
+    BlockSpec { id: 'D', x:  0.00, y: 3.15, hx: 0.35, hy: 0.45 },
+    BlockSpec { id: 'E', x:  0.00, y: 4.05, hx: 0.35, hy: 0.45 },
+    BlockSpec { id: 'F', x: -1.60, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'G', x: -0.95, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'H', x:  1.30, y: 0.30, hx: 0.30, hy: 0.30 },
 ];
 
 const LEVEL_1_BLOCKS: &[BlockSpec] = &[
-    BlockSpec { id: 'A', x: -2.00, y: 0.40, hx: 0.40, hy: 0.40 },
-    BlockSpec { id: 'B', x: -2.00, y: 1.20, hx: 0.40, hy: 0.40 },
-    BlockSpec { id: 'C', x: -2.00, y: 2.00, hx: 0.40, hy: 0.40 },
-    BlockSpec { id: 'D', x: 2.00, y: 0.40, hx: 0.40, hy: 0.40 },
-    BlockSpec { id: 'E', x: 2.00, y: 1.20, hx: 0.40, hy: 0.40 },
-    BlockSpec { id: 'F', x: 2.00, y: 2.00, hx: 0.40, hy: 0.40 },
-    BlockSpec { id: 'G', x: 0.00, y: 2.55, hx: 2.00, hy: 0.15 },
-    BlockSpec { id: 'H', x: 0.00, y: 2.95, hx: 0.50, hy: 0.25 },
+    BlockSpec { id: 'A', x: -1.60, y: 0.45, hx: 0.35, hy: 0.45 },
+    BlockSpec { id: 'B', x: -1.60, y: 1.35, hx: 0.35, hy: 0.45 },
+    BlockSpec { id: 'C', x:  1.60, y: 0.45, hx: 0.35, hy: 0.45 },
+    BlockSpec { id: 'D', x:  1.60, y: 1.35, hx: 0.35, hy: 0.45 },
+    BlockSpec { id: 'E', x:  0.00, y: 2.02, hx: 1.95, hy: 0.22 },
+    BlockSpec { id: 'F', x: -1.30, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'G', x:  1.30, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'H', x:  0.00, y: 0.30, hx: 0.30, hy: 0.30 },
 ];
 
 const LEVEL_2_BLOCKS: &[BlockSpec] = &[
-    BlockSpec { id: 'A', x: 0.00, y: 0.35, hx: 0.75, hy: 0.35 },
-    BlockSpec { id: 'B', x: 0.00, y: 1.07, hx: 0.55, hy: 0.37 },
-    BlockSpec { id: 'C', x: 0.00, y: 1.81, hx: 0.42, hy: 0.37 },
-    BlockSpec { id: 'D', x: 0.00, y: 2.48, hx: 0.32, hy: 0.30 },
-    BlockSpec { id: 'E', x: 0.00, y: 3.08, hx: 0.28, hy: 0.30 },
-    BlockSpec { id: 'F', x: 0.00, y: 3.68, hx: 0.24, hy: 0.30 },
-    BlockSpec { id: 'G', x: -1.15, y: 0.30, hx: 0.35, hy: 0.30 },
-    BlockSpec { id: 'H', x: 1.15, y: 0.30, hx: 0.35, hy: 0.30 },
+    BlockSpec { id: 'A', x: -0.90, y: 0.45, hx: 0.40, hy: 0.45 },
+    BlockSpec { id: 'B', x: -0.90, y: 1.35, hx: 0.40, hy: 0.45 },
+    BlockSpec { id: 'C', x:  0.90, y: 0.45, hx: 0.40, hy: 0.45 },
+    BlockSpec { id: 'D', x:  0.90, y: 1.35, hx: 0.40, hy: 0.45 },
+    BlockSpec { id: 'E', x:  0.00, y: 2.25, hx: 0.70, hy: 0.45 },
+    BlockSpec { id: 'F', x: -1.50, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'G', x:  1.50, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'H', x:  0.00, y: 0.30, hx: 0.30, hy: 0.30 },
 ];
 
 const LEVEL_3_BLOCKS: &[BlockSpec] = &[
-    BlockSpec { id: 'A', x: -1.30, y: 0.45, hx: 0.45, hy: 0.45 },
-    BlockSpec { id: 'B', x: -1.30, y: 1.35, hx: 0.45, hy: 0.45 },
-    BlockSpec { id: 'C', x: 1.30, y: 0.45, hx: 0.45, hy: 0.45 },
-    BlockSpec { id: 'D', x: 1.30, y: 1.35, hx: 0.45, hy: 0.45 },
-    BlockSpec { id: 'E', x: 0.00, y: 1.95, hx: 1.75, hy: 0.15 },
-    BlockSpec { id: 'F', x: 0.00, y: 2.35, hx: 0.50, hy: 0.25 },
-    BlockSpec { id: 'G', x: -0.75, y: 2.35, hx: 0.25, hy: 0.25 },
-    BlockSpec { id: 'H', x: 0.75, y: 2.35, hx: 0.25, hy: 0.25 },
+    BlockSpec { id: 'A', x: 0.00, y: 0.35, hx: 0.80, hy: 0.35 },
+    BlockSpec { id: 'B', x: 0.00, y: 1.05, hx: 0.62, hy: 0.35 },
+    BlockSpec { id: 'C', x: 0.00, y: 1.75, hx: 0.46, hy: 0.35 },
+    BlockSpec { id: 'D', x: 0.00, y: 2.45, hx: 0.32, hy: 0.35 },
+    BlockSpec { id: 'E', x: 0.00, y: 3.15, hx: 0.20, hy: 0.35 },
+    BlockSpec { id: 'F', x: -1.60, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'G', x:  1.60, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'H', x:  0.00, y: 0.30, hx: 0.30, hy: 0.30 },
 ];
 
 const LEVEL_4_BLOCKS: &[BlockSpec] = &[
-    BlockSpec { id: 'A', x: 0.00, y: 0.30, hx: 1.60, hy: 0.30 },
-    BlockSpec { id: 'B', x: 0.00, y: 0.95, hx: 1.20, hy: 0.35 },
-    BlockSpec { id: 'C', x: 0.00, y: 1.65, hx: 0.85, hy: 0.35 },
-    BlockSpec { id: 'D', x: 0.00, y: 2.35, hx: 0.55, hy: 0.35 },
-    BlockSpec { id: 'E', x: 0.00, y: 2.92, hx: 0.30, hy: 0.22 },
-    BlockSpec { id: 'H', x: 0.00, y: 3.44, hx: 0.20, hy: 0.30 },
-    BlockSpec { id: 'F', x: -1.95, y: 0.25, hx: 0.30, hy: 0.25 },
-    BlockSpec { id: 'G', x: 1.95, y: 0.25, hx: 0.30, hy: 0.25 },
+    BlockSpec { id: 'A', x: 0.00, y: 0.30, hx: 1.20, hy: 0.30 },
+    BlockSpec { id: 'B', x: 0.00, y: 0.90, hx: 0.95, hy: 0.30 },
+    BlockSpec { id: 'C', x: 0.00, y: 1.50, hx: 0.70, hy: 0.30 },
+    BlockSpec { id: 'D', x: 0.00, y: 2.10, hx: 0.45, hy: 0.30 },
+    BlockSpec { id: 'E', x: 0.00, y: 2.70, hx: 0.22, hy: 0.30 },
+    BlockSpec { id: 'F', x: -1.85, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'G', x:  1.85, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'H', x: -1.30, y: 0.30, hx: 0.30, hy: 0.30 },
 ];
 
 const LEVEL_5_BLOCKS: &[BlockSpec] = &[
     BlockSpec { id: 'A', x: 0.00, y: 0.50, hx: 0.35, hy: 0.50 },
     BlockSpec { id: 'B', x: 0.00, y: 1.50, hx: 0.35, hy: 0.50 },
-    BlockSpec { id: 'C', x: 0.00, y: 2.50, hx: 0.35, hy: 0.50 },
-    BlockSpec { id: 'D', x: 0.00, y: 3.18, hx: 1.80, hy: 0.18 },
-    BlockSpec { id: 'E', x: 1.20, y: 3.58, hx: 0.30, hy: 0.22 },
-    BlockSpec { id: 'F', x: -1.20, y: 3.58, hx: 0.30, hy: 0.22 },
-    BlockSpec { id: 'G', x: -0.90, y: 0.30, hx: 0.30, hy: 0.30 },
-    BlockSpec { id: 'H', x: 0.90, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'C', x: 0.00, y: 2.50, hx: 0.60, hy: 0.50 },
+    BlockSpec { id: 'D', x: 0.00, y: 3.20, hx: 1.10, hy: 0.20 },
+    BlockSpec { id: 'E', x: 0.85, y: 3.65, hx: 0.25, hy: 0.25 },
+    BlockSpec { id: 'F', x: -1.40, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'G', x:  1.40, y: 0.30, hx: 0.30, hy: 0.30 },
+    BlockSpec { id: 'H', x:  0.00, y: 0.30, hx: 0.30, hy: 0.30 },
 ];
 
 const LEVELS: &[Level] = &[
     Level {
         name: "LA TORRE",
         blocks: LEVEL_0_BLOCKS,
-        solution: ['B', 'E', 'A', 'F', 'G'],
     },
     Level {
         name: "EL PUENTE",
         blocks: LEVEL_1_BLOCKS,
-        solution: ['C', 'F', 'B', 'E', 'G'],
-    },
-    Level {
-        name: "LA AGUJA",
-        blocks: LEVEL_2_BLOCKS,
-        solution: ['B', 'D', 'A', 'E', 'G'],
     },
     Level {
         name: "EL ARCO",
+        blocks: LEVEL_2_BLOCKS,
+    },
+    Level {
+        name: "LA AGUJA",
         blocks: LEVEL_3_BLOCKS,
-        solution: ['B', 'D', 'A', 'C', 'E'],
     },
     Level {
         name: "LA PIRAMIDE",
         blocks: LEVEL_4_BLOCKS,
-        solution: ['B', 'C', 'A', 'D', 'E'],
     },
     Level {
         name: "LA GRUA",
         blocks: LEVEL_5_BLOCKS,
-        solution: ['A', 'C', 'B', 'D', 'E'],
     },
 ];
 
-// --- Idiomas ---
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Lang {
-    Es,
-    En,
-}
+const LANG_ES: u8 = 0;
+const LANG_EN: u8 = 1;
 
-static mut CURRENT_LANG: Lang = Lang::Es;
+static CURRENT_LANG: AtomicU8 = AtomicU8::new(LANG_ES);
 
 #[no_mangle]
 pub extern "C" fn set_language(lang: u8) {
-    unsafe {
-        CURRENT_LANG = match lang {
-            0 => Lang::Es,
-            1 => Lang::En,
-            _ => Lang::Es,
-        };
-    }
+    CURRENT_LANG.store(
+        if lang == LANG_EN { LANG_EN } else { LANG_ES },
+        Ordering::Relaxed,
+    );
 }
 
 fn tr(key: &str) -> String {
-    unsafe {
-        match CURRENT_LANG {
-            Lang::Es => TR_ES.get(key).copied().unwrap_or(key).to_string(),
-            Lang::En => TR_EN.get(key).copied().unwrap_or(key).to_string(),
-        }
+    let lang = CURRENT_LANG.load(Ordering::Relaxed);
+    match lang {
+        LANG_EN => TR_EN.get(key).copied().unwrap_or(key).to_string(),
+        _ => TR_ES.get(key).copied().unwrap_or(key).to_string(),
     }
 }
 
 static TR_ES: phf::Map<&'static str, &'static str> = phf::phf_map! {
-    "title" => "Demoliword",
-    "subtitle" => "Puzzle diario de demolicion",
-    "how_to_play" => "Como jugar",
-    "pick_blocks" => "Elegí 5 bloques A–H en el orden correcto para colapsar la estructura.",
-    "attempts" => "Tenés 6 intentos.",
-    "load_blocks" => "A–H / click cargá bloques",
-    "detonate" => "Enter detona",
-    "backspace" => "Backspace borra",
-    "retry" => "R o Enter reintenta",
-    "switch_level" => "← → o 1–6 cambia de estructura",
-    "green" => "Verde · en su posición",
-    "yellow" => "Amarillo · está, pero en otro lugar",
-    "gray" => "Gris · no está en la solución",
     "puzzle" => "PUZZLE #",
-    "structure" => "ESTRUCTURA: ",
     "level" => "NIVEL ",
     "of" => " / ",
     "attempts_label" => "INTENTOS",
+    "attempts_left" => "quedan",
     "blocks_loaded" => "/5 BLOQUES CARGADOS",
     "ready_to_detonate" => "LISTO PARA DETONAR",
     "detonation" => "DETONACION ",
     "evaluating" => "EVALUANDO COLAPSO...",
     "perfect_collapse" => "¡COLAPSO PERFECTO!",
-    "solution" => "SOLUCION: ",
     "out_of_charges" => "SE ACABARON LAS CARGAS",
     "come_back" => "Vuelve mañana para otro puzzle.",
-    "solution_was" => "La secuencia correcta era:",
+    "practice_again" => "Podés seguir practicando con esta estructura.",
+    "solution_was" => "Los bloques que la sostenían eran:",
     "collapsed_in" => "Derribaste la estructura en",
     "attempt_singular" => "intento.",
     "attempt_plural" => "intentos.",
-    "try_again" => "ENTER / R: reintentar - FLECHAS o 1-6: otro nivel",
-    "rebuilding" => "RECONSTRUYENDO LA TORRE",
+    "rebuilding" => "RECONSTRUYENDO LA ESTRUCTURA",
     "detonate_btn" => "DETONAR",
     "delete_btn" => "BORRAR",
     "retry_btn" => "OTRA VEZ",
+    "other_level_btn" => "OTRA ESTRUCTURA",
+    "pick_exactly" => "Elegí exactamente 5 bloques",
+    "toast_full" => "Ya cargaste 5 bloques",
+    "toast_dup" => "Ese bloque ya está cargado",
+    "daily_closed" => "El puzzle de hoy ya se cerró",
+    "attempts_exhausted" => "Se acabaron los intentos: apretá R para reiniciar",
+    "verdict_collapsed" => "LA ESTRUCTURA CAYÓ",
+    "verdict_standing" => "LA ESTRUCTURA SIGUE EN PIE",
+    "verdict_wrong_blocks" => "CAYÓ, PERO ELEGISTE BLOQUES QUE NO LA SOSTENÍAN",
+    "verdict_not_fallen" => "ELEGISTE BIEN, PERO NO LLEGÓ A CAER",
+    "legend_green" => "sostiene a otro",
+    "legend_yellow" => "solo se apoya",
+    "legend_gray" => "suelto en el piso",
+    "legend_title" => "Qué significa cada color",
 };
 
 static TR_EN: phf::Map<&'static str, &'static str> = phf::phf_map! {
-    "title" => "Demoliword",
-    "subtitle" => "Daily demolition puzzle",
-    "how_to_play" => "How to Play",
-    "pick_blocks" => "Pick 5 blocks A–H in the exact order to collapse the structure.",
-    "attempts" => "You have 6 attempts.",
-    "load_blocks" => "A–H / click to load blocks",
-    "detonate" => "Enter detonates",
-    "backspace" => "Backspace deletes",
-    "retry" => "R or Enter retries",
-    "switch_level" => "← → or 1–6 changes structure",
-    "green" => "Green · correct position",
-    "yellow" => "Yellow · exists, wrong place",
-    "gray" => "Gray · not in solution",
     "puzzle" => "PUZZLE #",
-    "structure" => "STRUCTURE: ",
     "level" => "LEVEL ",
     "of" => " / ",
     "attempts_label" => "ATTEMPTS",
+    "attempts_left" => "left",
     "blocks_loaded" => "/5 BLOCKS LOADED",
     "ready_to_detonate" => "READY TO DETONATE",
     "detonation" => "DETONATION ",
     "evaluating" => "EVALUATING COLLAPSE...",
     "perfect_collapse" => "PERFECT COLLAPSE!",
-    "solution" => "SOLUTION: ",
     "out_of_charges" => "OUT OF CHARGES",
     "come_back" => "Come back tomorrow for another puzzle.",
-    "solution_was" => "The correct sequence was:",
+    "practice_again" => "You can keep practising on this structure.",
+    "solution_was" => "The blocks holding it up were:",
     "collapsed_in" => "You collapsed the structure in",
     "attempt_singular" => "attempt.",
     "attempt_plural" => "attempts.",
-    "try_again" => "ENTER / R: retry - ARROWS or 1-6: change level",
-    "rebuilding" => "REBUILDING TOWER",
+    "rebuilding" => "REBUILDING THE STRUCTURE",
     "detonate_btn" => "DETONATE",
     "delete_btn" => "DELETE",
     "retry_btn" => "AGAIN",
+    "other_level_btn" => "OTHER STRUCTURE",
+    "pick_exactly" => "Pick exactly 5 blocks",
+    "toast_full" => "You already loaded 5 blocks",
+    "toast_dup" => "That block is already loaded",
+    "daily_closed" => "Today's puzzle is already closed",
+    "attempts_exhausted" => "Out of attempts: press R to restart",
+    "verdict_collapsed" => "THE STRUCTURE FELL",
+    "verdict_standing" => "THE STRUCTURE IS STILL STANDING",
+    "verdict_wrong_blocks" => "IT FELL, BUT YOU PICKED BLOCKS THAT DIDN'T HOLD IT",
+    "verdict_not_fallen" => "RIGHT BLOCKS, BUT IT DIDN'T COME DOWN",
+    "legend_green" => "holds up another block",
+    "legend_yellow" => "only resting on others",
+    "legend_gray" => "loose on the ground",
+    "legend_title" => "What each colour means",
 };
 
-static mut DAYS_SINCE_EPOCH: i64 = 0;
-static mut SOUND_EVENT: i32 = 0;
+static DAYS_SINCE_EPOCH: AtomicI64 = AtomicI64::new(0);
+static DAYS_VALID: AtomicU8 = AtomicU8::new(0);
 
 #[no_mangle]
-pub extern "C" fn set_daily_seed(days: i64) {
-    unsafe { DAYS_SINCE_EPOCH = days; }
+pub extern "C" fn set_daily_seed(days: i32) {
+    DAYS_SINCE_EPOCH.store(days as i64, Ordering::Relaxed);
+    DAYS_VALID.store(1, Ordering::Relaxed);
 }
+
+const SOUND_QUEUE_LEN: usize = 16;
+static SOUND_QUEUE: [AtomicI32; SOUND_QUEUE_LEN] = [const { AtomicI32::new(0) }; SOUND_QUEUE_LEN];
+static SOUND_WRITE: AtomicUsize = AtomicUsize::new(0);
+static SOUND_READ: AtomicUsize = AtomicUsize::new(0);
 
 #[no_mangle]
 pub extern "C" fn take_sound_event() -> i32 {
-    unsafe {
-        let ev = SOUND_EVENT;
-        SOUND_EVENT = 0;
-        ev
+    let read = SOUND_READ.load(Ordering::Relaxed);
+    let write = SOUND_WRITE.load(Ordering::Relaxed);
+    if read >= write {
+        return 0;
     }
+    SOUND_READ.store(read + 1, Ordering::Relaxed);
+    SOUND_QUEUE[read % SOUND_QUEUE_LEN].load(Ordering::Relaxed)
 }
 
 fn emit_sound(id: i32) {
-    unsafe { SOUND_EVENT = id; }
+    let write = SOUND_WRITE.fetch_add(1, Ordering::Relaxed);
+    SOUND_QUEUE[write % SOUND_QUEUE_LEN].store(id, Ordering::Relaxed);
 }
 
 fn days_since_epoch() -> i64 {
-    let days = unsafe { DAYS_SINCE_EPOCH };
-    if days != 0 {
-        return days;
+    current_day().unwrap_or(0)
+}
+
+fn current_day() -> Option<i64> {
+    if DAYS_VALID.load(Ordering::Relaxed) != 0 {
+        return Some(DAYS_SINCE_EPOCH.load(Ordering::Relaxed));
     }
     #[cfg(target_arch = "wasm32")]
     {
-        return 0;
+        None
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| (d.as_secs() / 86_400) as i64)
-            .unwrap_or(0)
+            .ok()
     }
 }
 
+fn daily_level_index_for(puzzle: i64) -> usize {
+    (puzzle.rem_euclid(LEVELS.len() as i64)) as usize
+}
+
 fn get_daily_level_index() -> usize {
-    (puzzle_number().rem_euclid(LEVELS.len() as i64)) as usize
+    daily_level_index_for(puzzle_number())
+}
+
+fn generate_level(seed: u32, attempt: u32) -> Option<Vec<BlockSpec>> {
+    let mut blocks = generate_blocks(seed, attempt);
+    for i in 0..blocks.len() {
+        for j in i + 1..blocks.len() {
+            if blocks_overlap(&blocks[i], &blocks[j]) {
+                return None;
+            }
+        }
+    }
+    let level = Level {
+        name: "GENERADA",
+        blocks: Box::leak(blocks.clone().into_boxed_slice()),
+    };
+
+    let core = core_blocks(&level);
+    if core.len() != SOLUTION_LEN {
+        return None;
+    }
+    let sueltos: Vec<char> = level
+        .blocks
+        .iter()
+        .filter(|b| !core.contains(&b.id))
+        .map(|b| b.id)
+        .collect();
+    if sueltos.len() != 3 {
+        return None;
+    }
+
+    let mut world = World::new(&level);
+    for _ in 0..(1.5 / FIXED_DT) as usize {
+        world.step();
+    }
+    for b in world.blocks.iter() {
+        let Some(body) = world.bodies.get(b.handle) else {
+            continue;
+        };
+        let p = body.translation();
+        if p.y - b.hy < -0.02 {
+            return None;
+        }
+        if body.rotation().angle().abs() > 0.30 {
+            return None;
+        }
+    }
+
+    let mut guess = ['A'; SOLUTION_LEN];
+    for (i, c) in core.iter().enumerate() {
+        guess[i] = *c;
+    }
+    let mut world = World::new(&level);
+    for _ in 0..(EXPLODE_DELAY / FIXED_DT) as usize {
+        world.step();
+    }
+    for c in core.iter() {
+        world.detonate(*c);
+        for _ in 0..(EXPLODE_INTERVAL / FIXED_DT) as usize {
+            world.step();
+        }
+    }
+    for _ in 0..(SIM_TAIL / FIXED_DT) as usize {
+        world.step();
+    }
+    if !world.structure_collapsed(&level) {
+        return None;
+    }
+
+    let mut g2 = ['A'; SOLUTION_LEN];
+    for (i, c) in sueltos.iter().enumerate() {
+        g2[i] = *c;
+    }
+    let mut world = World::new(&level);
+    for _ in 0..(EXPLODE_DELAY / FIXED_DT) as usize {
+        world.step();
+    }
+    for c in sueltos.iter() {
+        world.detonate(*c);
+        for _ in 0..(EXPLODE_INTERVAL / FIXED_DT) as usize {
+            world.step();
+        }
+    }
+    for _ in 0..(SIM_TAIL / FIXED_DT) as usize {
+        world.step();
+    }
+    if world.structure_collapsed(&level) {
+        return None;
+    }
+
+    blocks.shrink_to_fit();
+    Some(blocks)
+}
+
+fn blocks_overlap(a: &BlockSpec, b: &BlockSpec) -> bool {
+    let (ax0, ax1) = (a.x - a.hx, a.x + a.hx);
+    let (ay0, ay1) = (a.y - a.hy, a.y + a.hy);
+    let (bx0, bx1) = (b.x - b.hx, b.x + b.hx);
+    let (by0, by1) = (b.y - b.hy, b.y + b.hy);
+    ax0 < bx1 - 0.005 && ax1 > bx0 + 0.005 && ay0 < by1 - 0.005 && ay1 > by0 + 0.005
+}
+
+fn generate_blocks(seed: u32, attempt: u32) -> Vec<BlockSpec> {
+    let s = seed
+        .wrapping_mul(0x9E37_79B1)
+        .wrapping_add(attempt.wrapping_mul(0x85EB_CA77))
+        .wrapping_add(0x9E37_79B9);
+    let r = |k: u32| -> f32 {
+        let mut n = s
+            .wrapping_add(k.wrapping_mul(0x27D4_EB2F))
+            .wrapping_mul(0x2545_F491);
+        n ^= n >> 15;
+        n = n.wrapping_mul(0x85EB_CA77);
+        n ^= n >> 13;
+        (n & 0x00FF_FFFF) as f32 / 16_777_215.0
+    };
+
+    let mut b = Vec::with_capacity(8);
+    let tipo = ((r(1) * 12.0) as usize).min(11);
+    match tipo {
+        0 => {
+            let h = 0.42 + r(2) * 0.12;
+            let hw = 0.28 + r(3) * 0.10;
+            let dx = (r(4) - 0.5) * 0.10;
+            for i in 0..5 {
+                b.push(BlockSpec {
+                    id: (b'A' + i as u8) as char,
+                    x: dx * i as f32,
+                    y: h * (i as f32 + 0.5),
+                    hx: hw,
+                    hy: h * 0.5,
+                });
+            }
+        }
+        1 => {
+            let h = 0.32 + r(2) * 0.10;
+            let base = 0.72 + r(3) * 0.22;
+            for i in 0..5 {
+                b.push(BlockSpec {
+                    id: (b'A' + i as u8) as char,
+                    x: 0.0,
+                    y: h * (i as f32 + 0.5),
+                    hx: base - i as f32 * (base * 0.22),
+                    hy: h * 0.5,
+                });
+            }
+        }
+        2 => {
+            let h = 0.40 + r(2) * 0.10;
+            let sep = 1.4 + r(3) * 0.55;
+            let hw = 0.30 + r(4) * 0.08;
+            b.push(BlockSpec { id: 'A', x: -sep, y: h * 0.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'B', x: -sep, y: h * 1.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'C', x: sep, y: h * 0.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'D', x: sep, y: h * 1.5, hx: hw, hy: h * 0.5 });
+            let vh = 0.09 + r(5) * 0.06;
+            b.push(BlockSpec {
+                id: 'E',
+                x: (r(6) - 0.5) * 0.20,
+                y: h * 2.0 + vh,
+                hx: sep + hw + 0.10,
+                hy: vh,
+            });
+        }
+        3 => {
+            let h = 0.40 + r(2) * 0.10;
+            let sep = 0.80 + r(3) * 0.32;
+            let hw = 0.32 + r(4) * 0.10;
+            b.push(BlockSpec { id: 'A', x: -sep, y: h * 0.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'B', x: -sep, y: h * 1.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'C', x: sep, y: h * 0.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'D', x: sep, y: h * 1.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec {
+                id: 'E',
+                x: (r(6) - 0.5) * 0.15,
+                y: h * 2.0,
+                hx: 0.55 + r(5) * 0.20,
+                hy: h * 0.5,
+            });
+        }
+        4 => {
+            let h = 0.46 + r(2) * 0.10;
+            let hw = 0.30 + r(4) * 0.08;
+            b.push(BlockSpec { id: 'A', x: 0.0, y: h * 0.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'B', x: 0.0, y: h * 1.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'C', x: 0.0, y: h * 2.5, hx: hw + 0.20, hy: h * 0.5 });
+            let arm = 0.95 + r(5) * 0.30;
+            let ah = 0.08 + r(6) * 0.06;
+            b.push(BlockSpec {
+                id: 'D',
+                x: (r(7) - 0.5) * 0.20,
+                y: h * 3.0 + ah,
+                hx: arm,
+                hy: ah,
+            });
+            b.push(BlockSpec {
+                id: 'E',
+                x: arm * (0.55 + r(8) * 0.30),
+                y: h * 3.0 + ah * 2.0 + 0.15,
+                hx: 0.22,
+                hy: 0.15,
+            });
+        }
+        5 => {
+            let h = 0.40 + r(2) * 0.10;
+            let paso = 0.50 + r(5) * 0.20;
+            let mut x = -1.5;
+            let mut y = h * 0.5;
+            let ancho = 0.30 + r(4) * 0.08;
+            for i in 0..5 {
+                b.push(BlockSpec {
+                    id: (b'A' + i as u8) as char,
+                    x,
+                    y,
+                    hx: ancho,
+                    hy: h * 0.5,
+                });
+                x += paso;
+                y += h;
+            }
+        }
+        6 => {
+            let h = 0.44 + r(2) * 0.10;
+            let hw = 0.44 + r(4) * 0.10;
+            b.push(BlockSpec { id: 'A', x: 0.0, y: h * 0.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'B', x: 0.0, y: h * 1.5, hx: hw * 0.86, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'C', x: 0.0, y: h * 2.5, hx: hw * 0.70, hy: h * 0.5 });
+            let cap = 0.30 + r(5) * 0.14;
+            b.push(BlockSpec {
+                id: 'D',
+                x: 0.0,
+                y: h * 3.0 + cap * 0.5,
+                hx: cap,
+                hy: cap * 0.5,
+            });
+            b.push(BlockSpec {
+                id: 'E',
+                x: 0.0,
+                y: h * 3.0 + cap * 1.5,
+                hx: cap * 0.55,
+                hy: cap * 0.5,
+            });
+        }
+        7 => {
+            let h = 0.42 + r(2) * 0.10;
+            let hw = 0.30 + r(4) * 0.08;
+            let largo = 0.95 + r(5) * 0.35;
+            b.push(BlockSpec { id: 'A', x: 0.0, y: h * 0.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'B', x: 0.0, y: h * 1.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec {
+                id: 'C',
+                x: largo * 0.5,
+                y: h * 2.0,
+                hx: largo * 0.5,
+                hy: h * 0.36,
+            });
+            b.push(BlockSpec {
+                id: 'D',
+                x: largo,
+                y: h * 2.0 - h * 0.18,
+                hx: hw * 0.7,
+                hy: h * 0.30,
+            });
+            b.push(BlockSpec {
+                id: 'E',
+                x: -largo * 0.42,
+                y: h * 1.62,
+                hx: hw * 0.7,
+                hy: h * 0.30,
+            });
+        }
+        9 => {
+            let h = 0.40 + r(2) * 0.10;
+            let hw = 0.32 + r(4) * 0.08;
+            let sep = 0.80 + r(5) * 0.32;
+            b.push(BlockSpec { id: 'A', x: -sep, y: h * 0.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'B', x: -sep, y: h * 1.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'C', x: sep, y: h * 0.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'D', x: sep, y: h * 1.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec {
+                id: 'E',
+                x: 0.0,
+                y: h * 2.0,
+                hx: sep + hw + 0.10,
+                hy: h * 0.5,
+            });
+        }
+        10 => {
+            let h = 0.44 + r(2) * 0.10;
+            let hw = 0.44 + r(4) * 0.10;
+            b.push(BlockSpec { id: 'A', x: 0.0, y: h * 0.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'B', x: 0.0, y: h * 1.5, hx: hw * 0.86, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'C', x: 0.0, y: h * 2.5, hx: hw * 0.70, hy: h * 0.5 });
+            let cap = 0.30 + r(5) * 0.14;
+            b.push(BlockSpec {
+                id: 'D',
+                x: 0.0,
+                y: h * 3.0 + cap * 0.5,
+                hx: cap,
+                hy: cap * 0.5,
+            });
+            b.push(BlockSpec {
+                id: 'E',
+                x: 0.0,
+                y: h * 3.0 + cap * 1.5,
+                hx: cap * 0.55,
+                hy: cap * 0.5,
+            });
+        }
+        _ => {
+            let h = 0.42 + r(2) * 0.10;
+            let hw = 0.30 + r(4) * 0.08;
+            let largo = 0.95 + r(5) * 0.35;
+            b.push(BlockSpec { id: 'A', x: 0.0, y: h * 0.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec { id: 'B', x: 0.0, y: h * 1.5, hx: hw, hy: h * 0.5 });
+            b.push(BlockSpec {
+                id: 'C',
+                x: largo * 0.5,
+                y: h * 2.0,
+                hx: largo * 0.5,
+                hy: h * 0.36,
+            });
+            b.push(BlockSpec {
+                id: 'D',
+                x: largo,
+                y: h * 2.0 - h * 0.18,
+                hx: hw * 0.7,
+                hy: h * 0.30,
+            });
+            b.push(BlockSpec {
+                id: 'E',
+                x: -largo * 0.42,
+                y: h * 1.62,
+                hx: hw * 0.7,
+                hy: h * 0.30,
+            });
+        }
+    }
+    let mut pos = [-1.95f32, 1.95, 2.90];
+    for i in 0..3 {
+        pos[i] += (r(10 + i as u32) - 0.5) * 0.24;
+        b.push(BlockSpec {
+            id: (b'F' + i as u8) as char,
+            x: pos[i],
+            y: 0.26 + r(20 + i as u32) * 0.04,
+            hx: 0.26,
+            hy: 0.26,
+        });
+    }
+    b
+}
+
+fn generate_daily_level() -> Option<Level> {
+    let puzzle = puzzle_number();
+    if puzzle <= 0 {
+        return None;
+    }
+    let seed = puzzle as u32;
+    for attempt in 0..80u32 {
+        if let Some(blocks) = generate_level(seed, attempt) {
+            let name = nombre_estructura(&blocks);
+            return Some(Level {
+                name,
+                blocks: Box::leak(blocks.into_boxed_slice()),
+            });
+        }
+    }
+    None
+}
+
+fn nombre_estructura(blocks: &[BlockSpec]) -> &'static str {
+    let nivel = Level {
+        name: "",
+        blocks: Box::leak(blocks.to_vec().into_boxed_slice()),
+    };
+    let core = core_blocks(&nivel);
+
+    let anchos: Vec<f32> = core
+        .iter()
+        .filter_map(|id| blocks.iter().find(|b| b.id == *id))
+        .map(|b| b.hx)
+        .collect();
+    let alturas: Vec<f32> = core
+        .iter()
+        .filter_map(|id| blocks.iter().find(|b| b.id == *id))
+        .map(|b| b.y)
+        .collect();
+    let xs: Vec<f32> = core
+        .iter()
+        .filter_map(|id| blocks.iter().find(|b| b.id == *id))
+        .map(|b| b.x)
+        .collect();
+
+    let decreciente = anchos.windows(2).all(|w| w[0] > w[1]);
+    let toda_la_misma_altura = alturas.iter().all(|h| (h - alturas[0]).abs() < 0.02);
+    let superior_ancho = anchos.iter().any(|w| *w > 0.85);
+    let en_linea = xs.iter().all(|x| (x - xs[0]).abs() < 0.05);
+    let inclinada = !xs.windows(2).all(|w| (w[1] - w[0]).abs() > 0.15);
+
+    if toda_la_misma_altura && superior_ancho {
+        "LA VIGA"
+    } else if toda_la_misma_altura {
+        "EL PILAR"
+    } else if decreciente {
+        "LA ZIGURAT"
+    } else if inclinada {
+        "LA ESCALERA"
+    } else if en_linea {
+        "LA CUPULA"
+    } else {
+        "EL CANTO"
+    }
 }
 
 const PUZZLE_EPOCH_DAYS: i64 = 20_454;
@@ -763,6 +1299,79 @@ struct Sim {
     post: f32,
 }
 
+#[derive(Clone, Default)]
+struct LevelState {
+    attempts_used: usize,
+    history: Vec<([char; SOLUTION_LEN], [Feedback; SOLUTION_LEN])>,
+}
+
+struct Progress {
+    level_idx: usize,
+    states: Vec<LevelState>,
+    daily_idx: Option<usize>,
+}
+
+impl Progress {
+    fn new(level_idx: usize, daily_idx: Option<usize>) -> Self {
+        Progress {
+            level_idx: level_idx % LEVELS.len(),
+            states: vec![LevelState::default(); LEVELS.len()],
+            daily_idx,
+        }
+    }
+
+    fn state(&self) -> &LevelState {
+        &self.states[self.level_idx]
+    }
+
+    fn state_mut(&mut self) -> &mut LevelState {
+        &mut self.states[self.level_idx]
+    }
+
+    fn is_daily_level(&self) -> bool {
+        self.daily_idx == Some(self.level_idx)
+    }
+
+    fn attempts_exhausted(&self) -> bool {
+        self.state().attempts_used >= MAX_ATTEMPTS
+    }
+
+    fn can_submit(&self) -> bool {
+        !self.attempts_exhausted()
+    }
+
+    fn consume_attempt(&mut self) -> bool {
+        if !self.can_submit() {
+            return false;
+        }
+        self.state_mut().attempts_used += 1;
+        true
+    }
+
+    fn restart(&mut self) {
+        if self.is_daily_level() {
+            return;
+        }
+        let st = self.state_mut();
+        st.attempts_used = 0;
+        st.history.clear();
+    }
+
+    fn load_level(&mut self, idx: usize) {
+        if idx < LEVELS.len() {
+            self.level_idx = idx;
+        }
+    }
+
+    fn reset_daily(&mut self, idx: usize) {
+        for st in self.states.iter_mut() {
+            st.attempts_used = 0;
+            st.history.clear();
+        }
+        let _ = idx;
+    }
+}
+
 struct Block {
     id: char,
     hx: f32,
@@ -914,6 +1523,46 @@ impl World {
         );
         Some((center.x, center.y))
     }
+
+    #[allow(dead_code)]
+    fn peak_height(&self) -> f32 {
+        let mut peak: f32 = 0.0;
+        for b in &self.blocks {
+            if !b.alive {
+                continue;
+            }
+            let Some(body) = self.bodies.get(b.handle) else {
+                continue;
+            };
+            let p = body.translation();
+            peak = peak.max(p.y + b.hy);
+        }
+        peak
+    }
+
+    fn structure_collapsed(&self, level: &Level) -> bool {
+        let core = structural_blocks(level);
+        for b in &self.blocks {
+            if !b.alive || !core.contains(&b.id) {
+                continue;
+            }
+            let Some(body) = self.bodies.get(b.handle) else {
+                continue;
+            };
+            if body.translation().y - b.hy > 0.55 {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn level_peak_height(level: &Level) -> f32 {
+    level
+        .blocks
+        .iter()
+        .map(|b| b.y + b.hy)
+        .fold(0.0f32, f32::max)
 }
 
 struct Particle {
@@ -938,12 +1587,14 @@ struct Game {
     level_idx: usize,
     seed_applied: i64,
     world: World,
-    attempts_used: usize,
-    history: Vec<([char; SOLUTION_LEN], [Feedback; SOLUTION_LEN])>,
+    progress: Progress,
     selection: Vec<char>,
     sim_guess: [char; SOLUTION_LEN],
     phase: Phase,
     next_phase: Phase,
+    collapsed: bool,
+    last_attempt_done: bool,
+    last_feedback: [Feedback; SOLUTION_LEN],
     sim: Sim,
     reset_timer: f32,
     reveal_row: Option<usize>,
@@ -958,21 +1609,31 @@ struct Game {
     shake: f32,
     acc: f32,
     light_tex: [Texture2D; 3],
+    daily: Option<Level>,
+    fullscreen: bool,
 }
 
 impl Game {
     fn new(level_idx: usize) -> Self {
         let level_idx = level_idx % LEVELS.len();
+        let daily_idx = if current_day().is_some() {
+            Some(get_daily_level_index())
+        } else {
+            None
+        };
         Game {
             level_idx,
             seed_applied: days_since_epoch(),
             world: World::new(&LEVELS[level_idx]),
-            attempts_used: 0,
-            history: Vec::new(),
+            daily: generate_daily_level(),
+            progress: Progress::new(level_idx, daily_idx),
             selection: Vec::new(),
             sim_guess: ['A'; SOLUTION_LEN],
             phase: Phase::Planning,
             next_phase: Phase::Planning,
+            collapsed: false,
+            last_attempt_done: false,
+            last_feedback: [Feedback::Gray; SOLUTION_LEN],
             sim: Sim { next: 0, timer: 0.0, post: 0.0 },
             reset_timer: 0.0,
             reveal_row: None,
@@ -991,11 +1652,33 @@ impl Game {
                 make_light_texture(23),
                 make_light_texture(37),
             ],
+            fullscreen: false,
         }
     }
 
-    fn level(&self) -> &'static Level {
+    fn level(&self) -> &Level {
+        if self.level_idx == get_daily_level_index() {
+            if let Some(daily) = &self.daily {
+                return daily;
+            }
+        }
         &LEVELS[self.level_idx]
+    }
+
+    fn state(&self) -> &LevelState {
+        self.progress.state()
+    }
+
+    fn state_mut(&mut self) -> &mut LevelState {
+        self.progress.state_mut()
+    }
+
+    fn is_daily_level(&self) -> bool {
+        self.progress.is_daily_level()
+    }
+
+    fn attempts_exhausted(&self) -> bool {
+        self.progress.attempts_exhausted()
     }
 
 
@@ -1010,11 +1693,11 @@ impl Game {
             return;
         }
         if self.selection.len() >= SOLUTION_LEN {
-            self.toast("Ya cargaste 5 bloques");
+            self.toast(&tr("toast_full"));
             return;
         }
         if self.selection.contains(&ch) {
-            self.toast("Ese bloque ya esta cargado");
+            self.toast(&tr("toast_dup"));
             return;
         }
         self.selection.push(ch);
@@ -1034,32 +1717,52 @@ impl Game {
         if self.phase != Phase::Planning {
             return;
         }
+        if self.attempts_exhausted() {
+            self.toast(&tr(if self.is_daily_level() {
+                "daily_closed"
+            } else {
+                "attempts_exhausted"
+            }));
+            return;
+        }
         if self.selection.len() != SOLUTION_LEN {
-            self.toast("Elige exactamente 5 bloques");
+            self.toast(&tr("pick_exactly"));
             return;
         }
         for (i, ch) in self.selection.iter().enumerate() {
             self.sim_guess[i] = *ch;
         }
-        self.attempts_used += 1;
+        self.progress.consume_attempt();
         self.phase = Phase::Simulating;
         self.sim = Sim { next: 0, timer: EXPLODE_DELAY, post: SIM_TAIL };
         self.acc = 0.0;
         emit_sound(3);
     }
 
+    fn target_blocks(&self) -> Vec<char> {
+        target_blocks_for(self.level())
+    }
+
     fn finish_attempt(&mut self) {
-        let feedback = evaluate(&self.sim_guess, &self.level().solution);
-        self.history.push((self.sim_guess, feedback));
+        let feedback = evaluate(self.level(), &self.sim_guess);
+        let bloques_correctos = !feedback.iter().any(|f| *f == Feedback::Gray);
+        let won = self.collapsed && bloques_correctos;
+        let guess = self.sim_guess;
+        let exhausted = {
+            let st = self.state_mut();
+            st.history.push((guess, feedback));
+            st.attempts_used >= MAX_ATTEMPTS
+        };
+        self.last_feedback = feedback;
         self.selection.clear();
 
-        self.reveal_row = Some(self.history.len() - 1);
+        self.reveal_row = Some(self.state().history.len() - 1);
         self.reveal_t = 0.0;
 
-        self.next_phase = if feedback.iter().all(|f| *f == Feedback::Green) {
+        self.next_phase = if won {
             emit_sound(4);
             Phase::Won
-        } else if self.attempts_used >= MAX_ATTEMPTS {
+        } else if exhausted {
             emit_sound(5);
             Phase::Lost
         } else {
@@ -1068,17 +1771,12 @@ impl Game {
         self.phase = Phase::Revealing;
     }
 
-    fn rebuild(&mut self) {
-        self.world = World::new(self.level());
-        self.particles.clear();
-        self.flashes.clear();
-        self.acc = 0.0;
-        self.shake = 0.0;
-    }
-
     fn restart(&mut self) {
-        self.attempts_used = 0;
-        self.history.clear();
+        let daily = self.is_daily_level();
+        if daily && self.attempts_exhausted() {
+            self.toast(&tr("daily_closed"));
+        }
+        self.progress.restart();
         self.selection.clear();
         self.phase = Phase::Planning;
         self.next_phase = Phase::Planning;
@@ -1093,9 +1791,27 @@ impl Game {
         if idx >= LEVELS.len() {
             return;
         }
+        self.progress.load_level(idx);
         self.level_idx = idx;
-        self.restart();
+        self.selection.clear();
+        self.phase = Phase::Planning;
+        self.next_phase = Phase::Planning;
+        self.reveal_row = None;
+        self.reveal_t = 0.0;
+        self.select_t = 99.0;
+        self.last_letter = None;
+        self.rebuild();
     }
+
+    fn rebuild(&mut self) {
+        let blocks = self.level().blocks;
+        self.world = World::new(&Level { name: "", blocks });
+        self.particles.clear();
+        self.flashes.clear();
+        self.acc = 0.0;
+        self.shake = 0.0;
+    }
+
 
     fn spawn_explosion(&mut self, wx: f32, wy: f32) {
         let (sx, sy) = w2s(wx, wy);
@@ -1144,10 +1860,15 @@ impl Game {
 
 
     fn update(&mut self, dt: f32) {
-        let daily = days_since_epoch();
-        if daily != 0 && daily != self.seed_applied {
-            self.seed_applied = daily;
-            self.load_level(get_daily_level_index());
+        if let Some(daily) = current_day() {
+            if daily != self.seed_applied {
+                self.seed_applied = daily;
+                let idx = get_daily_level_index();
+                self.progress.daily_idx = Some(idx);
+                self.progress.reset_daily(idx);
+                self.daily = generate_daily_level();
+                self.load_level(idx);
+            }
         }
 
         self.handle_input(dt);
@@ -1195,7 +1916,8 @@ impl Game {
                 } else {
                     self.sim.post -= dt;
                     if self.sim.post <= 0.0 {
-                        
+                        self.collapsed = self.world.structure_collapsed(self.level());
+                        self.last_attempt_done = true;
                         self.finish_attempt();
                     }
                 }
@@ -1275,11 +1997,15 @@ impl Game {
 
         if click && inside(RETRY_X, RETRY_Y, RETRY_W, RETRY_H, mx, my) {
             if self.phase == Phase::Won || self.phase == Phase::Lost {
-                self.restart();
+                if self.is_daily_level() && self.attempts_exhausted() {
+                    let n = (self.level_idx + 1) % LEVELS.len();
+                    self.load_level(n);
+                } else {
+                    self.restart();
+                }
                 return;
             }
         }
-
         match self.phase {
             Phase::Planning => {
                 const KEYS: [(KeyCode, char); 8] = [
@@ -1322,7 +2048,12 @@ impl Game {
             }
             Phase::Won | Phase::Lost => {
                 if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
-                    self.restart();
+                    if self.is_daily_level() && self.attempts_exhausted() {
+                        let n = (self.level_idx + 1) % LEVELS.len();
+                        self.load_level(n);
+                    } else {
+                        self.restart();
+                    }
                 }
             }
             Phase::Simulating | Phase::Revealing | Phase::Resetting => {}
@@ -1518,9 +2249,109 @@ impl Game {
                 color: border,
             });
 
+            self.draw_block_detail(block, sx, sy, w, h, angle, k);
+
             let letter = block.id.to_string();
             let size = (h * 0.45).clamp(18.0, 40.0);
             text_center(&letter, sx, sy + size * 0.36, size, C_INK);
+        }
+    }
+
+    fn draw_block_detail(
+        &self,
+        block: &Block,
+        sx: f32,
+        sy: f32,
+        w: f32,
+        h: f32,
+        _angle: f32,
+        k: f32,
+    ) {
+        let ancho = w.min(h * 1.4);
+        let alto = h.min(w * 1.4);
+        let seed = (block.id as u32).wrapping_mul(2654435761);
+        let es_viga = w > h * 1.6;
+        let es_bajo = block.hy < 0.32;
+
+        if es_viga {
+            let truss = Color { r: 0.30 * k, g: 0.22 * k, b: 0.13 * k, a: 0.55 };
+            let n = ((w / 26.0).round() as usize).clamp(2, 9);
+            for i in 0..n {
+                let t = (i as f32 + 0.5) / n as f32;
+                let x = sx - w * 0.5 + w * t;
+                draw_line(
+                    x,
+                    sy - alto * 0.5,
+                    x + w / n as f32 * 0.5,
+                    sy + alto * 0.5,
+                    1.6,
+                    truss,
+                );
+                draw_line(
+                    x + w / n as f32 * 0.5,
+                    sy - alto * 0.5,
+                    x,
+                    sy + alto * 0.5,
+                    1.6,
+                    truss,
+                );
+            }
+            let flange = Color { r: 0.26 * k, g: 0.19 * k, b: 0.11 * k, a: 0.75 };
+            draw_rectangle(sx - w * 0.5, sy - alto * 0.5, w, 3.0, flange);
+            draw_rectangle(sx - w * 0.5, sy + alto * 0.5 - 3.0, w, 3.0, flange);
+        } else if es_bajo {
+            let slab = Color { r: 0.28 * k, g: 0.21 * k, b: 0.12 * k, a: 0.5 };
+            let n = ((ancho / 30.0).round() as usize).clamp(2, 7);
+            for i in 0..n {
+                let t = (i as f32 + 0.5) / n as f32;
+                let x = sx - ancho * 0.5 + ancho * t;
+                draw_line(x, sy - alto * 0.42, x, sy + alto * 0.42, 1.4, slab);
+            }
+        } else {
+            let filas = ((alto / 26.0).round() as usize).clamp(1, 6);
+            let mortero = Color { r: 0.33 * k, g: 0.24 * k, b: 0.13 * k, a: 0.42 };
+            for i in 1..=filas {
+                let y = sy - alto * 0.5 + alto * (i as f32 / (filas + 1) as f32);
+                draw_line(sx - ancho * 0.5 + 2.0, y, sx + ancho * 0.5 - 2.0, y, 1.3, mortero);
+            }
+            let cols = ((ancho / 24.0).round() as usize).clamp(1, 5);
+            for i in 1..cols {
+                let x = sx - ancho * 0.5 + ancho * (i as f32 / cols as f32);
+                draw_line(x, sy - alto * 0.5 + 2.0, x, sy + alto * 0.5 - 2.0, 1.1, mortero);
+            }
+
+            let ventana = Color { r: 0.16, g: 0.20, b: 0.27, a: 0.85 };
+            let marco = Color { r: 0.30 * k, g: 0.22 * k, b: 0.12 * k, a: 0.9 };
+            let ww = (ancho * 0.30).min(16.0);
+            let wh = (alto * 0.30).min(18.0);
+            if ww > 6.0 && wh > 6.0 {
+                let filas_v = if alto > 70.0 { 2 } else { 1 };
+                for f in 0..filas_v {
+                    let oy = if filas_v == 2 {
+                        (f as f32 - 0.5) * alto * 0.32
+                    } else {
+                        0.0
+                    };
+                    let wx = sx - ww * 0.5;
+                    let wy = sy + oy - wh * 0.5;
+                    draw_rectangle(wx, wy, ww, wh, ventana);
+                    draw_rectangle_lines(wx, wy, ww, wh, 1.6, marco);
+                }
+            }
+        }
+
+        if hash01(seed) > 0.62 {
+            let grieta = Color { r: 0.22 * k, g: 0.16 * k, b: 0.09 * k, a: 0.75 };
+            let ox = (hash01(seed + 7) - 0.5) * ancho * 0.6;
+            let oy = (hash01(seed + 13) - 0.5) * alto * 0.6;
+            draw_line(
+                sx + ox,
+                sy + oy - alto * 0.25,
+                sx + ox + alto * 0.14,
+                sy + oy + alto * 0.22,
+                1.5,
+                grieta,
+            );
         }
     }
 
@@ -1591,17 +2422,21 @@ impl Game {
         let word = "WORD";
         let demi_w = measure_text(demi, None, size as u16, 1.0).width;
         let shadow = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.5 };
-        draw_text(demi, 30.5, 56.5, size, shadow);
-        draw_text(word, 30.5 + demi_w, 56.5, size, shadow);
-        draw_text(demi, 28.0, 54.0, size, C_WHITE);
-        draw_text(word, 28.0 + demi_w, 54.0, size, C_ACCENT);
+        if self.fullscreen {
+            draw_text(demi, 30.5, 56.5, size, shadow);
+            draw_text(word, 30.5 + demi_w, 56.5, size, shadow);
+            draw_text(demi, 28.0, 54.0, size, C_WHITE);
+            draw_text(word, 28.0 + demi_w, 54.0, size, C_ACCENT);
+        }
 
         draw_text(self.level().name, 30.0, 86.0, 18.0, C_DIM);
 
         let puzzle = format!("{}{}", tr("puzzle"), puzzle_number());
-        text_right(&puzzle, VIEW_W - 30.0, 56.0, 18.0, C_DIM);
+        draw_text(&puzzle, 30.0, 108.0, 18.0, C_WHITE);
         let lvl = format!("{}{} {}{}", tr("level"), self.level_idx + 1, tr("of"), LEVELS.len());
-        text_right(&lvl, VIEW_W - 30.0, 86.0, 18.0, C_FAINT);
+        draw_text(&lvl, 30.0, 130.0, 18.0, C_WHITE);
+        let peak = level_peak_height(self.level());
+        draw_text(&format!("{:.1} m", peak), 30.0, 152.0, 16.0, C_WHITE);
 
         if self.phase == Phase::Planning {
             if self.selection.len() == SOLUTION_LEN {
@@ -1642,6 +2477,21 @@ impl Game {
             text_center(&label, VIEW_W / 2.0, 138.0, 20.0, C_ACCENT_HI);
         }
 
+        if matches!(self.phase, Phase::Revealing | Phase::Won | Phase::Lost | Phase::Resetting)
+            && self.last_attempt_done
+        {
+            let correct = !self.last_feedback.iter().any(|f| *f == Feedback::Gray);
+            let (txt, color) = if self.collapsed && correct {
+                (tr("verdict_collapsed"), C_GREEN_BORDER)
+            } else if self.collapsed {
+                (tr("verdict_wrong_blocks"), C_YELLOW_BORDER)
+            } else if correct {
+                (tr("verdict_not_fallen"), C_YELLOW_BORDER)
+            } else {
+                (tr("verdict_standing"), C_YELLOW_BORDER)
+            };
+            text_center(&txt, VIEW_W / 2.0, 512.0, 19.0, color);
+        }
         if self.toast_timer > 0.0 && !self.toast_msg.is_empty() {
             let alpha = (self.toast_timer / 0.5).min(1.0);
             let w = measure_text(&self.toast_msg, None, 18, 1.0).width + 36.0;
@@ -1714,16 +2564,24 @@ impl Game {
         let (mx, my) = mouse_view();
 
         draw_text(tr("attempts_label"), PANEL_X + 20.0, 52.0, 26.0, C_WHITE);
-        let n = (self.attempts_used
-            + if self.phase == Phase::Planning { 1 } else { 0 })
-        .min(MAX_ATTEMPTS);
+        let used = self.state().attempts_used.min(MAX_ATTEMPTS);
+        let left = MAX_ATTEMPTS.saturating_sub(used);
         text_right(
-            &format!("{}/{}", n.max(1), MAX_ATTEMPTS),
+            &format!("{}/{}", used, MAX_ATTEMPTS),
             1262.0,
             52.0,
             20.0,
             C_DIM,
         );
+        if left > 0 {
+            text_right(
+                &format!("{} {}", left, tr("attempts_left")),
+                1262.0,
+                76.0,
+                15.0,
+                C_FAINT,
+            );
+        }
 
         let hover_left = inside(SEL_LEFT_X, SEL_Y, SEL_BTN_W, SEL_H, mx, my);
         let hover_right = inside(SEL_RIGHT_X, SEL_Y, SEL_BTN_W, SEL_H, mx, my);
@@ -1771,8 +2629,8 @@ impl Game {
             for col in 0..SOLUTION_LEN {
                 let cell_cx = GX0 + col as f32 * (CELL + CELL_GAP) + CELL * 0.5;
 
-                if row < self.history.len() {
-                    let (guess, feedback) = self.history[row];
+                if row < self.state().history.len() {
+                    let (guess, feedback) = self.state().history[row];
                     let (fill, border) = feedback_style(feedback[col]);
 
                     let p = if self.reveal_row == Some(row) {
@@ -1810,7 +2668,7 @@ impl Game {
                     }
 
                     draw_cell_letter(cell_cx, cy, size, guess[col], C_WHITE);
-                } else if row == self.history.len()
+                } else if row == self.state().history.len()
                     && (self.phase == Phase::Planning || self.phase == Phase::Simulating)
                 {
                     let border = Color {
@@ -1842,6 +2700,21 @@ impl Game {
                     draw_cell(cell_cx, cy, CELL, C_CELL_EMPTY, C_CELL_EMPTY_BORDER);
                 }
             }
+        }
+
+        let ly = GY0 + MAX_ATTEMPTS as f32 * ROW_PITCH + 22.0;
+        let leyenda = [
+            (Feedback::Green, tr("legend_green")),
+            (Feedback::Yellow, tr("legend_yellow")),
+            (Feedback::Gray, tr("legend_gray")),
+        ];
+        let mut lyx = PANEL_CARD_X + 16.0;
+        for (fb, txt) in leyenda {
+            let (fill, border) = feedback_style(fb);
+            draw_rectangle(lyx, ly, 13.0, 13.0, fill);
+            draw_rectangle_lines(lyx, ly, 13.0, 13.0, 1.5, border);
+            draw_text(&txt, lyx + 18.0, ly + 12.0, 13.0, C_DIM);
+            lyx += 18.0 + measure_text(&txt, None, 13, 1.0).width + 16.0;
         }
 
         draw_rectangle(
@@ -1891,7 +2764,7 @@ impl Game {
             ACTION_Y,
             BTN_BORRAR_W,
             ACTION_H,
-            "BORRAR",
+            &tr("delete_btn"),
             if hover_borrar {
                 Color { r: 0.21, g: 0.25, b: 0.31, a: 1.0 }
             } else {
@@ -1914,7 +2787,7 @@ impl Game {
             ACTION_Y,
             BTN_DETONAR_W,
             ACTION_H,
-            "DETONAR",
+            &tr("detonate_btn"),
             fill,
             border,
             txt,
@@ -1967,22 +2840,35 @@ impl Game {
                     let sub = format!(
                         "{} {} {}",
                         tr("collapsed_in"),
-                        self.attempts_used,
-                        if self.attempts_used == 1 { tr("attempt_singular") } else { tr("attempt_plural") }
+                        self.state().attempts_used,
+                        if self.state().attempts_used == 1 { tr("attempt_singular") } else { tr("attempt_plural") }
                     );
                     text_center(&sub, VIEW_W / 2.0, 336.0, 22.0, C_WHITE);
-                    text_center(tr("come_back"), VIEW_W / 2.0, 358.0, 18.0, C_WHITE);
+                    text_center(
+                        tr(if self.is_daily_level() { "come_back" } else { "practice_again" }),
+                        VIEW_W / 2.0,
+                        358.0,
+                        18.0,
+                        C_WHITE,
+                    );
                 } else {
                     text_center(tr("out_of_charges"), VIEW_W / 2.0, 296.0, 46.0, C_RED);
                     text_center(tr("solution_was"), VIEW_W / 2.0, 336.0, 22.0, C_WHITE);
-                    text_center(tr("come_back"), VIEW_W / 2.0, 358.0, 18.0, C_WHITE);
+                    text_center(
+                        tr(if self.is_daily_level() { "come_back" } else { "practice_again" }),
+                        VIEW_W / 2.0,
+                        358.0,
+                        18.0,
+                        C_WHITE,
+                    );
                 }
 
                 let chip = 54.0;
                 let gap = 10.0;
-                let total = SOLUTION_LEN as f32 * chip + (SOLUTION_LEN - 1) as f32 * gap;
+                let targets = self.target_blocks();
+                let total = targets.len() as f32 * chip + (targets.len() as f32 - 1.0) * gap;
                 let x0 = VIEW_W / 2.0 - total / 2.0;
-                for (i, ch) in self.level().solution.iter().enumerate() {
+                for (i, ch) in targets.iter().enumerate() {
                     let x = x0 + i as f32 * (chip + gap);
                     draw_rectangle(x, 372.0, chip, chip, C_GREEN);
                     draw_rectangle_lines(x, 372.0, chip, chip, 2.0, C_GREEN_BORDER);
@@ -1995,6 +2881,7 @@ impl Game {
                     );
                 }
 
+                let daily_closed = self.is_daily_level() && self.attempts_exhausted();
                 let hover_retry = {
                     let (mx, my) = mouse_view();
                     inside(RETRY_X, RETRY_Y, RETRY_W, RETRY_H, mx, my)
@@ -2004,7 +2891,7 @@ impl Game {
                     RETRY_Y,
                     RETRY_W,
                     RETRY_H,
-                    "OTRA VEZ",
+                    &tr(if daily_closed { "other_level_btn" } else { "retry_btn" }),
                     if hover_retry { C_ACCENT_HI } else { C_ACCENT },
                     C_ACCENT_HI,
                     Color { r: 0.10, g: 0.07, b: 0.03, a: 1.0 },
@@ -2017,20 +2904,14 @@ impl Game {
 }
 
 
-fn evaluate(guess: &[char; SOLUTION_LEN], secret: &[char; SOLUTION_LEN]) -> [Feedback; SOLUTION_LEN] {
+fn evaluate(level: &Level, guess: &[char; SOLUTION_LEN]) -> [Feedback; SOLUTION_LEN] {
     let mut out = [Feedback::Gray; SOLUTION_LEN];
-    for i in 0..SOLUTION_LEN {
-        if guess[i] == secret[i] {
-            out[i] = Feedback::Green;
-        }
-    }
-    for i in 0..SOLUTION_LEN {
-        if out[i] == Feedback::Green {
-            continue;
-        }
-        if secret.contains(&guess[i]) {
-            out[i] = Feedback::Yellow;
-        }
+    for (i, ch) in guess.iter().enumerate() {
+        out[i] = match block_role(level, *ch) {
+            Some(true) => Feedback::Green,
+            Some(false) => Feedback::Yellow,
+            None => Feedback::Gray,
+        };
     }
     out
 }
@@ -2084,7 +2965,7 @@ async fn main() {
 
         let dt = get_frame_time().min(0.05);
         game.update(dt);
-
+    game.fullscreen = fullscreen;
         clear_background(C_BG);
         let s = view_scale();
         let camera = Camera2D {
@@ -2116,17 +2997,71 @@ mod tests {
     }
 
     #[test]
-    fn evaluacion_wordle() {
-        let secret = ['B', 'E', 'A', 'H', 'C'];
-        assert_eq!(evaluate(&secret, &secret), [Feedback::Green; SOLUTION_LEN]);
+    fn el_feedback_describe_el_papel_del_bloque() {
+        let level = &LEVELS[0]; // LA TORRE: cadena A-E + sueltos F,G,H
+        let guess = ['A', 'D', 'E', 'F', 'H'];
+        let fb = evaluate(level, &guess);
+        assert_eq!(fb[0], Feedback::Green, "A sostiene a B: es llave");
+        assert_eq!(fb[1], Feedback::Green, "D sostiene a E: es llave");
+        assert_eq!(fb[2], Feedback::Yellow, "E es el tope: solo se apoya");
+        assert_eq!(fb[3], Feedback::Gray, "F esta suelto: es inutil");
+        assert_eq!(fb[4], Feedback::Gray, "H esta suelto: es inutil");
+    }
 
-        let guess = ['E', 'B', 'A', 'X', 'C'];
-        let fb = evaluate(&guess, &secret);
-        assert_eq!(fb[0], Feedback::Yellow);
-        assert_eq!(fb[1], Feedback::Yellow);
-        assert_eq!(fb[2], Feedback::Green);
-        assert_eq!(fb[3], Feedback::Gray);
-        assert_eq!(fb[4], Feedback::Green);
+    #[test]
+    fn cada_estructura_tiene_5_en_el_nucleo_y_3_sueltos() {
+        for level in LEVELS {
+            let nucleo = core_blocks(level);
+            assert_eq!(
+                nucleo.len(),
+                SOLUTION_LEN,
+                "{}: el nucleo tiene {} bloques, deberian ser {}",
+                level.name,
+                nucleo.len(),
+                SOLUTION_LEN
+            );
+
+            let mut inutiles = 0;
+            for b in level.blocks {
+                if !nucleo.contains(&b.id) {
+                    inutiles += 1;
+                    assert_eq!(
+                        block_role(level, b.id),
+                        None,
+                        "{}: el bloque {} esta fuera del nucleo pero no es inutil",
+                        level.name,
+                        b.id
+                    );
+                }
+            }
+            assert_eq!(
+                inutiles, 3,
+                "{}: tiene {} bloques sueltos, deberian ser 3",
+                level.name, inutiles
+            );
+
+            let claves = key_blocks(level);
+            assert!(
+                !claves.is_empty(),
+                "{}: ningun bloque sostiene a otro",
+                level.name
+            );
+        }
+    }
+
+    #[test]
+    fn los_inutiles_no_sostienen_nada() {
+        for level in LEVELS {
+            for b in level.blocks {
+                if block_role(level, b.id).is_some() {
+                    continue;
+                }
+                let holds = level.blocks.iter().any(|o| o.id != b.id && supports(b, o));
+                let held = level.blocks.iter().any(|o| o.id != b.id && supports(o, b));
+                assert!(!holds, "{}: el inutil {} sostiene a alguien", level.name, b.id);
+                assert!(!held, "{}: el inutil {} esta apoyado en algo", level.name, b.id);
+            }
+        }
     }
 
     #[test]
@@ -2155,28 +3090,469 @@ mod tests {
     }
 
     #[test]
-    fn detonar_la_solucion_elimina_los_bloques() {
+    fn detonar_el_plan_elimina_los_bloques() {
         for level in LEVELS {
+            let target = target_blocks_for(level);
+            {
+                let mut world = World::new(level);
+                settle(&mut world, 1.0);
+                for i in 0..target.len() {
+                    assert!(
+                        world.detonate(target[i]).is_some(),
+                        "no exploto el bloque {}",
+                        target[i]
+                    );
+                    settle(&mut world, EXPLODE_INTERVAL);
+                }
+                settle(&mut world, SIM_TAIL);
+
+                let alive = world.blocks.iter().filter(|b| b.alive).count();
+                assert_eq!(alive, level.blocks.len() - SOLUTION_LEN);
+                for block in world.blocks.iter().filter(|b| b.alive) {
+                    if let Some(body) = world.bodies.get(block.handle) {
+                        assert!(
+                            body.translation().y.is_finite(),
+                            "{}: NaN en el bloque {}",
+                            level.name,
+                            block.id
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tirar_los_claves_derrumba_y_los_inutiles_no() {
+        for level in LEVELS {
+            let claves = target_blocks_for(level);
             let mut world = World::new(level);
-            settle(&mut world, 1.0);
-            for ch in level.solution {
-                assert!(world.detonate(ch).is_some(), "no exploto el bloque {}", ch);
+            settle(&mut world, EXPLODE_DELAY);
+            for ch in &claves {
+                world.detonate(*ch);
                 settle(&mut world, EXPLODE_INTERVAL);
             }
             settle(&mut world, SIM_TAIL);
+            assert!(
+                world.structure_collapsed(level),
+                "{}: tirar los bloques clave {:?} no derrumbó la estructura",
+                level.name,
+                claves.iter().collect::<String>()
+            );
 
-            let alive = world.blocks.iter().filter(|b| b.alive).count();
-            assert_eq!(alive, level.blocks.len() - SOLUTION_LEN);
-            for block in world.blocks.iter().filter(|b| b.alive) {
-                if let Some(body) = world.bodies.get(block.handle) {
-                    assert!(
-                        body.translation().y.is_finite(),
-                        "{}: NaN en el bloque {}",
-                        level.name,
-                        block.id
-                    );
+            let inutiles: Vec<char> = level
+                .blocks
+                .iter()
+                .filter(|b| block_role(level, b.id).is_none())
+                .map(|b| b.id)
+                .collect();
+            let mut world = World::new(level);
+            settle(&mut world, EXPLODE_DELAY);
+            for ch in &inutiles {
+                world.detonate(*ch);
+                settle(&mut world, EXPLODE_INTERVAL);
+            }
+            settle(&mut world, SIM_TAIL);
+            assert!(
+                !world.structure_collapsed(level),
+                "{}: tirar los bloques inutiles {:?} SI derrumbó la estructura",
+                level.name,
+                inutiles.iter().collect::<String>()
+            );
+        }
+    }
+
+    #[test]
+    fn la_estructura_se_mantiene_en_pie_sola() {
+        for level in LEVELS {
+            let mut world = World::new(level);
+            settle(&mut world, 2.0);
+            assert!(
+                !world.structure_collapsed(level),
+                "{}: la estructura se vino abajo sola",
+                level.name
+            );
+        }
+    }
+
+    #[test]
+    fn el_puzzle_diario_varia() {
+        let mut estructuras = std::collections::HashSet::new();
+        for puzzle in 0..60i64 {
+            estructuras.insert(daily_level_index_for(puzzle));
+        }
+        assert!(
+            estructuras.len() > 1,
+            "el daily siempre usa la misma estructura"
+        );
+    }
+
+    #[test]
+    fn el_limite_de_intentos_es_real() {
+        let daily = 0;
+        let mut p = Progress::new(daily, Some(daily));
+        assert!(p.is_daily_level());
+
+        for _ in 0..MAX_ATTEMPTS {
+            assert!(p.consume_attempt(), "un intento valido fue rechazado");
+        }
+        assert!(p.attempts_exhausted());
+        assert!(!p.can_submit());
+
+        assert!(
+            !p.consume_attempt(),
+            "se acepto un intento 7 en el puzzle diario"
+        );
+        assert_eq!(p.state().attempts_used, MAX_ATTEMPTS);
+
+        p.restart();
+        assert_eq!(
+            p.state().attempts_used,
+            MAX_ATTEMPTS,
+            "reiniciar devolvio los intentos del diario"
+        );
+        assert!(p.attempts_exhausted());
+    }
+
+    #[test]
+    fn en_practica_se_puede_reiniciar() {
+        let daily = 0;
+        let other = (daily + 1) % LEVELS.len();
+        let mut p = Progress::new(other, Some(daily));
+        assert!(!p.is_daily_level());
+
+        for _ in 0..MAX_ATTEMPTS {
+            p.consume_attempt();
+        }
+        p.state_mut().history.push((
+            ['A', 'B', 'C', 'D', 'E'],
+            [Feedback::Gray; SOLUTION_LEN],
+        ));
+
+        p.restart();
+        assert_eq!(p.state().attempts_used, 0, "la practica no se reinicio");
+        assert!(p.state().history.is_empty(), "el historial no se borro");
+        assert!(p.can_submit());
+    }
+
+    #[test]
+    fn cambiar_de_estructura_conserva_el_progreso() {
+        let daily = 0;
+        let mut p = Progress::new(daily, Some(daily));
+        let a = 0;
+        let b = (a + 1) % LEVELS.len();
+
+        p.state_mut().attempts_used = 3;
+        p.load_level(b);
+        assert_eq!(p.level_idx, b);
+        assert_eq!(
+            p.states[a].attempts_used, 3,
+            "cambiar de nivel borro los intentos del anterior"
+        );
+    }
+
+    #[test]
+    fn el_nuevo_dia_arranca_en_blanco() {
+        let mut p = Progress::new(0, Some(0));
+        p.state_mut().attempts_used = 4;
+        p.state_mut()
+            .history
+            .push((['A', 'B', 'C', 'D', 'E'], [Feedback::Gray; SOLUTION_LEN]));
+
+        p.reset_daily(0);
+        assert_eq!(p.state().attempts_used, 0);
+        assert!(p.state().history.is_empty());
+    }
+
+    #[test]
+    fn el_nuevo_dia_limpia_todas_las_estructuras() {
+        let mut p = Progress::new(0, Some(0));
+        let other = 1;
+        p.states[other].attempts_used = 2;
+        p.states[other]
+            .history
+            .push((['A', 'B', 'C', 'D', 'E'], [Feedback::Gray; SOLUTION_LEN]));
+
+        p.reset_daily(0);
+        assert_eq!(p.states[other].attempts_used, 0, "quedo progreso del dia viejo");
+        assert!(
+            p.states[other].history.is_empty(),
+            "quedo historial del plan viejo"
+        );
+    }
+
+    #[test]
+    fn no_se_gana_con_bloques_incorrectos() {
+        for level in LEVELS {
+            let ids: Vec<char> = level.blocks.iter().map(|b| b.id).collect();
+            let core = core_blocks(level);
+
+            let mut subs: Vec<Vec<usize>> = Vec::new();
+            let mut cur = Vec::new();
+            subsets(ids.len(), SOLUTION_LEN, 0, &mut cur, &mut subs);
+
+            let mut colapsan_mal = 0usize;
+            for s in &subs {
+                let mut guess = ['A'; SOLUTION_LEN];
+                for (i, j) in s.iter().enumerate() {
+                    guess[i] = ids[*j];
+                }
+                if guess.iter().all(|g| core.contains(g)) {
+                    continue; // esta es la respuesta correcta
+                }
+                let fb = evaluate(level, &guess);
+                let bloques_correctos = !fb.iter().any(|f| *f == Feedback::Gray);
+                let mut world = World::new(level);
+                settle(&mut world, EXPLODE_DELAY);
+                for i in 0..SOLUTION_LEN {
+                    world.detonate(guess[i]);
+                    settle(&mut world, EXPLODE_INTERVAL);
+                }
+                settle(&mut world, SIM_TAIL);
+                let colapso = world.structure_collapsed(level);
+                assert!(
+                    !(colapso && bloques_correctos),
+                    "{}: un set incorrecto {:?} ganaria (colapso={} correctos={})",
+                    level.name,
+                    guess.iter().collect::<String>(),
+                    colapso,
+                    bloques_correctos
+                );
+                if colapso {
+                    colapsan_mal += 1;
                 }
             }
+            let _ = colapsan_mal;
+        }
+    }
+
+    fn subsets(n: usize, k: usize, start: usize, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        if cur.len() == k {
+            out.push(cur.clone());
+            return;
+        }
+        for i in start..n {
+            cur.push(i);
+            subsets(n, k, i + 1, cur, out);
+            cur.pop();
+        }
+    }
+
+    fn generar_para(seed: u32) -> Option<Vec<BlockSpec>> {
+        for attempt in 0..80u32 {
+            if let Some(b) = generate_level(seed, attempt) {
+                return Some(b);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn las_estructuras_generadas_son_validas() {
+        let mut generadas = 0usize;
+        for seed in 1..25u32 {
+            let Some(blocks) = generar_para(seed) else {
+                panic!("la semilla {} no genero ninguna estructura valida", seed);
+            };
+            generadas += 1;
+            let level = Level {
+                name: "GEN",
+                blocks: Box::leak(blocks.into_boxed_slice()),
+            };
+
+            let core = core_blocks(&level);
+            assert_eq!(
+                core.len(),
+                SOLUTION_LEN,
+                "seed {}: el nucleo tiene {} bloques",
+                seed,
+                core.len()
+            );
+            let sueltos: Vec<char> = level
+                .blocks
+                .iter()
+                .filter(|b| !core.contains(&b.id))
+                .map(|b| b.id)
+                .collect();
+            assert_eq!(sueltos.len(), 3, "seed {}: no hay 3 sueltos", seed);
+
+            let mut world = World::new(&level);
+            settle(&mut world, 1.5);
+            for b in world.blocks.iter() {
+                let Some(body) = world.bodies.get(b.handle) else {
+                    continue;
+                };
+                assert!(
+                    body.translation().y - b.hy > -0.05,
+                    "seed {}: el bloque {} se hundio",
+                    seed,
+                    b.id
+                );
+            }
+
+            let mut guess = ['A'; SOLUTION_LEN];
+            for (i, c) in core.iter().enumerate() {
+                guess[i] = *c;
+            }
+            let mut world = World::new(&level);
+            settle(&mut world, EXPLODE_DELAY);
+            for i in 0..SOLUTION_LEN {
+                world.detonate(guess[i]);
+                settle(&mut world, EXPLODE_INTERVAL);
+            }
+            settle(&mut world, SIM_TAIL);
+            assert!(
+                world.structure_collapsed(&level),
+                "seed {}: tirar el nucleo {:?} no derrumbó la estructura",
+                seed,
+                core.iter().collect::<String>()
+            );
+
+            let mut g2 = ['A'; SOLUTION_LEN];
+            for (i, c) in sueltos.iter().enumerate() {
+                g2[i] = *c;
+            }
+            let mut world = World::new(&level);
+            settle(&mut world, EXPLODE_DELAY);
+            for i in 0..3 {
+                world.detonate(g2[i]);
+                settle(&mut world, EXPLODE_INTERVAL);
+            }
+            settle(&mut world, SIM_TAIL);
+            assert!(
+                !world.structure_collapsed(&level),
+                "seed {}: tirar los sueltos {:?} SI derrumbó la estructura",
+                seed,
+                sueltos.iter().collect::<String>()
+            );
+        }
+        assert_eq!(generadas, 24);
+    }
+
+    #[test]
+    fn el_puzzle_de_hoy_es_jugable() {
+        for dia in [days_since_epoch(), 20_454 + 1, 20_454 + 315, 20_454 + 999] {
+            if dia <= 0 {
+                continue;
+            }
+            let mut encontrada = None;
+            for attempt in 0..80u32 {
+                if let Some(blocks) = generate_level(dia as u32, attempt) {
+                    encontrada = Some(blocks);
+                    break;
+                }
+            }
+            let blocks = encontrada.unwrap_or_else(|| {
+                panic!("el dia {} no genero ninguna estructura valida", dia)
+            });
+            let level = Level {
+                name: "HOY",
+                blocks: Box::leak(blocks.into_boxed_slice()),
+            };
+            let core = core_blocks(&level);
+            assert_eq!(
+                core.len(),
+                SOLUTION_LEN,
+                "dia {}: el nucleo tiene {} bloques",
+                dia,
+                core.len()
+            );
+            let mut guess = ['A'; SOLUTION_LEN];
+            for (i, c) in core.iter().enumerate() {
+                guess[i] = *c;
+            }
+            let mut world = World::new(&level);
+            settle(&mut world, EXPLODE_DELAY);
+            for i in 0..SOLUTION_LEN {
+                world.detonate(guess[i]);
+                settle(&mut world, EXPLODE_INTERVAL);
+            }
+            settle(&mut world, SIM_TAIL);
+            assert!(
+                world.structure_collapsed(&level),
+                "dia {}: el puzzle de hoy no se puede ganar",
+                dia
+            );
+        }
+    }
+
+    #[test]
+    fn todos_los_tipos_generan_estructuras_validas() {
+        let mut total = 0usize;
+        for seed in 1..60u32 {
+            let mut encontrada = None;
+            for attempt in 0..80u32 {
+                if let Some(b) = generate_level(seed, attempt) {
+                    encontrada = Some(b);
+                    break;
+                }
+            }
+            let Some(blocks) = encontrada else {
+                continue;
+            };
+            total += 1;
+            let nivel = Level {
+                name: "T",
+                blocks: Box::leak(blocks.into_boxed_slice()),
+            };
+            let core = core_blocks(&nivel);
+            assert_eq!(core.len(), SOLUTION_LEN, "seed {}: nucleo incompleto", seed);
+        }
+        assert!(total >= 55, "solo {} de 59 semillas generaron estructura", total);
+    }
+
+    #[test]
+    fn cada_dia_genera_una_estructura_distinta() {
+        let mut vistas = std::collections::HashSet::new();
+        for seed in 1..15u32 {
+            let blocks = generar_para(seed).expect("deberia generar estructura");
+            let firma: String = blocks
+                .iter()
+                .map(|b| format!("{}{:.3}{:.3}{:.3}", b.id, b.x, b.y, b.hx))
+                .collect();
+            vistas.insert(firma);
+        }
+        assert_eq!(
+            vistas.len(),
+            14,
+            "dos dias dieron la misma estructura: hay poca variedad"
+        );
+    }
+
+    #[test]
+    fn el_intento_correcto_produce_colapso() {
+        for level in LEVELS {
+            let nucleo = core_blocks(level);
+            let mut guess = ['A'; SOLUTION_LEN];
+            for (i, ch) in nucleo.iter().enumerate() {
+                guess[i] = *ch;
+            }
+
+            let fb = evaluate(level, &guess);
+            assert!(
+                !fb.iter().any(|f| *f == Feedback::Gray),
+                "{}: un bloque del nucleo {:?} salio gris",
+                level.name,
+                nucleo.iter().collect::<String>()
+            );
+            assert!(
+                fb.iter().any(|f| *f == Feedback::Green),
+                "{}: ningun bloque del nucleo es verde (llave)",
+                level.name
+            );
+
+            let mut world = World::new(level);
+            settle(&mut world, EXPLODE_DELAY);
+            for ch in nucleo.iter() {
+                world.detonate(*ch);
+                settle(&mut world, EXPLODE_INTERVAL);
+            }
+            settle(&mut world, SIM_TAIL);
+            assert!(
+                world.structure_collapsed(level),
+                "{}: el intento correcto no derrumbó la estructura",
+                level.name
+            );
         }
     }
 }

@@ -43,7 +43,6 @@
     user-select: none;
     flex: 0 0 auto;
     width: 100%;
-    max-width: 1200px;
   }
   .logo {
     width: 58px;
@@ -99,7 +98,6 @@
     justify-content: center;
     gap: 10px;
     width: 100%;
-    max-width: 1200px;
     min-height: 0;
   }
 
@@ -266,17 +264,17 @@
   <div class="main">
     <aside class="how">
       <h2 id="web-howto">Como jugar</h2>
-      <p id="web-pick">Elegí 5 bloques <b>A–H</b> en el orden correcto para colapsar la estructura. Tenés <b>6 intentos</b>.</p>
+      <p id="web-pick">Cada estructura tiene <b>5 bloques que la sostienen</b> y 3 sueltos en el piso. Elegí los 5 que la sostienen y detonalos para tumbarla. Tenés <b>3 intentos</b>.</p>
       <ul>
         <li id="web-load"><span class="key">A</span>…<span class="key">H</span> / click cargá bloques</li>
         <li id="web-keys"><span class="key">Enter</span> detona · <span class="key">Backspace</span> borra</li>
-        <li id="web-retry"><span class="key">R</span> o <span class="key">Enter</span> reintenta</li>
+        <li id="web-retry"><span class="key">R</span> reinicia el nivel</li>
         <li id="web-switch"><span class="key">←</span> <span class="key">→</span> o <span class="key">1</span>–<span class="key">6</span> cambia de estructura</li>
       </ul>
       <div style="margin-top:12px; padding-top:4px;">
-        <div id="web-green"><span class="g">Verde</span> · en su posición</div>
-        <div id="web-yellow"><span class="y">Amarillo</span> · está, pero en otro lugar</div>
-        <div id="web-gray"><span class="gr">Gris</span> · no está en la solución</div>
+        <div id="web-green"><span class="g">Verde</span> · sostiene a otro bloque</div>
+        <div id="web-yellow"><span class="y">Amarillo</span> · solo se apoya</div>
+        <div id="web-gray"><span class="gr">Gris</span> · suelto en el piso</div>
       </div>
     </aside>
 
@@ -289,33 +287,32 @@
 
   <script src="mq_js_bundle.js"></script>
   <script>
-    // Traducciones web
     const TR = {
       es: {
         subtitle: "Puzzle diario de demolicion",
         howto: "Como jugar",
-        pick: "Elegí 5 bloques <b>A–H</b> en el orden correcto para colapsar la estructura. Tenés <b>6 intentos</b>.",
+        pick: "Cada estructura tiene <b>5 bloques que la sostienen</b> y 3 sueltos en el piso. Elegí los 5 que la sostienen y detonalos para tumbarla. Tenés <b>3 intentos</b>.",
         load: "<span class=\"key\">A</span>…<span class=\"key\">H</span> / click cargá bloques",
         keys: "<span class=\"key\">Enter</span> detona · <span class=\"key\">Backspace</span> borra",
-        retry: "<span class=\"key\">R</span> o <span class=\"key\">Enter</span> reintenta",
+        retry: "<span class=\"key\">R</span> reinicia el nivel",
         switch: "<span class=\"key\">←</span> <span class=\"key\">→</span> o <span class=\"key\">1</span>–<span class=\"key\">6</span> cambia de estructura",
-        green: "<span class=\"g\">Verde</span> · en su posición",
-        yellow: "<span class=\"y\">Amarillo</span> · está, pero en otro lugar",
-        gray: "<span class=\"gr\">Gris</span> · no está en la solución",
+        green: "<span class=\"g\">Verde</span> · sostiene a otro bloque",
+        yellow: "<span class=\"y\">Amarillo</span> · solo se apoya",
+        gray: "<span class=\"gr\">Gris</span> · suelto en el piso",
         win: "¡COLAPSO PERFECTO! Vuelve mañana para otro puzzle.",
         lose: "SE ACABARON LAS CARGAS. Vuelve mañana para intentarlo de nuevo."
       },
       en: {
         subtitle: "Daily demolition puzzle",
         howto: "How to Play",
-        pick: "Pick 5 blocks <b>A–H</b> in the exact order to collapse the structure. You have <b>6 attempts</b>.",
+        pick: "Each structure has <b>5 blocks holding it up</b> and 3 loose on the ground. Pick the 5 that hold it and detonate them to bring it down. You have <b>3 attempts</b>.",
         load: "<span class=\"key\">A</span>…<span class=\"key\">H</span> / click to load blocks",
         keys: "<span class=\"key\">Enter</span> detonates · <span class=\"key\">Backspace</span> deletes",
-        retry: "<span class=\"key\">R</span> or <span class=\"key\">Enter</span> retries",
+        retry: "<span class=\"key\">R</span> restarts the level",
         switch: "<span class=\"key\">←</span> <span class=\"key\">→</span> or <span class=\"key\">1</span>–<span class=\"key\">6</span> changes structure",
-        green: "<span class=\"g\">Green</span> · correct position",
-        yellow: "<span class=\"y\">Yellow</span> · exists, wrong place",
-        gray: "<span class=\"gr\">Gray</span> · not in solution",
+        green: "<span class=\"g\">Green</span> · holds up another block",
+        yellow: "<span class=\"y\">Yellow</span> · only resting on others",
+        gray: "<span class=\"gr\">Gray</span> · loose on the ground",
         win: "PERFECT COLLAPSE! Come back tomorrow for another puzzle.",
         lose: "OUT OF CHARGES. Come back tomorrow to try again."
       }
@@ -340,7 +337,6 @@
       callWasm('set_language', currentLang === 'es' ? 0 : 1);
     }
 
-    // macroquad asigna wasm_exports de forma asincrona tras cargar el modulo
     function waitForWasm(cb) {
       if (typeof wasm_exports !== 'undefined' && wasm_exports && typeof wasm_exports.set_daily_seed === 'function') {
         cb();
@@ -369,7 +365,6 @@
     document.getElementById('lang-es').addEventListener('click', () => setLang('es'));
     document.getElementById('lang-en').addEventListener('click', () => setLang('en'));
 
-    // Ajustar el canvas al espacio real disponible (16:9), sin salirse de pantalla
     function fitCanvas() {
       const stage = document.querySelector('.stage');
       const frame = document.querySelector('.frame');
@@ -410,7 +405,6 @@
     });
   </script>
   <script>
-    // Web Audio API para sonidos en la web
     let audioCtx = null;
     function getAudioCtx() {
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -451,7 +445,6 @@
       source.stop(now + duration);
     }
 
-    // API para que el WASM llame (expone funciones globales)
     window.playClick = () => { playTone(880, 0.08, 'sine', 0.3); };
     window.playDetonate = () => { playNoise(0.3, 0.5); };
     window.playCollapse = () => { playNoise(0.8, 0.4); };
@@ -459,12 +452,10 @@
     window.playLose = () => { playTone(220, 0.6, 'sine', 0.4); };
     window.playToast = () => { playTone(1320, 0.2, 'sine', 0.25); };
 
-    // Desbloquear el audio con el primer gesto del usuario
     ['pointerdown', 'keydown'].forEach((ev) =>
       window.addEventListener(ev, () => getAudioCtx().resume(), { passive: true })
     );
 
-    // El juego avisa que sonar via take_sound_event (1 cargar, 2 borrar, 3 detonar, 4 ganar, 5 perder, 6 aviso)
     const SOUNDS = {
       1: window.playClick,
       2: window.playClick,
@@ -476,8 +467,11 @@
     setInterval(() => {
       if (typeof wasm_exports === 'undefined' || !wasm_exports) return;
       if (typeof wasm_exports.take_sound_event !== 'function') return;
-      const ev = wasm_exports.take_sound_event();
-      if (ev && SOUNDS[ev]) SOUNDS[ev]();
+      for (let i = 0; i < 16; i++) {
+        const ev = wasm_exports.take_sound_event();
+        if (!ev) break;
+        if (SOUNDS[ev]) SOUNDS[ev]();
+      }
     }, 40);
   </script>
 </body>
