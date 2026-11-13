@@ -32,6 +32,7 @@ const RESET_TIME: f32 = 1.4;
 
 const BLAST_RADIUS: f32 = 1.9;
 const BLAST_POWER: f32 = 4.0;
+const MICRO_BOOST: f32 = 3.0;
 
 const GX0: f32 = 899.0;
 const GY0: f32 = 140.0;
@@ -1520,6 +1521,7 @@ struct World {
     blocks: Vec<Block>,
     _ground: RigidBodyHandle,
     contact_pressure: Vec<f32>,
+    first_detonation: bool,
 }
 
 impl World {
@@ -1593,6 +1595,7 @@ impl World {
             blocks,
             _ground: ground,
             contact_pressure: vec![0.0; level.blocks.len()],
+            first_detonation: false,
         }
     }
 
@@ -1652,7 +1655,9 @@ impl World {
             let dist = (dx * dx + dy * dy).sqrt();
             if dist < BLAST_RADIUS && dist > 1e-4 {
                 let falloff = 1.0 - dist / BLAST_RADIUS;
-                let mag = BLAST_POWER * falloff * falloff.max(0.35);
+                let base = BLAST_POWER * falloff * falloff.max(0.35);
+                let boost = if self.first_detonation { MICRO_BOOST * falloff } else { 0.0 };
+                let mag = base + boost;
                 let ix = dx / dist * mag;
                 let iy = dy / dist * mag + mag * 0.25;
                 let torque = (dx * iy - dy * ix) * 0.4;
@@ -1678,6 +1683,7 @@ impl World {
             &mut self.soft_bodies,
             true,
         );
+        self.first_detonation = false;
         Some((center.x, center.y))
     }
 
@@ -2132,6 +2138,7 @@ impl Game {
                         }
                         self.role_at_detonation[self.sim.next] =
                             live_feedback(&self.world, self.sim_guess[self.sim.next]);
+                        self.world.first_detonation = self.sim.next == 0;
                         let ch = self.sim_guess[self.sim.next];
                         if let Some((wx, wy)) = self.world.detonate(ch) {
                             self.spawn_explosion(wx, wy);
