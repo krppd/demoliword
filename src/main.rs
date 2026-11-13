@@ -372,6 +372,7 @@ static TR_ES: phf::Map<&'static str, &'static str> = phf::phf_map! {
     "daily_closed" => "El puzzle de hoy ya se cerró",
     "attempts_exhausted" => "Se acabaron los intentos: apretá R para reiniciar",
     "verdict_collapsed" => "LA ESTRUCTURA CAYÓ",
+    "verdict_perfect" => "DEMOLICIÓN PERFECTA",
     "verdict_standing" => "LA ESTRUCTURA SIGUE EN PIE",
     "verdict_wrong_blocks" => "CAYÓ, PERO ELEGISTE BLOQUES QUE NO LA SOSTENÍAN",
     "verdict_not_fallen" => "ELEGISTE BIEN, PERO NO LLEGÓ A CAER",
@@ -410,6 +411,7 @@ static TR_EN: phf::Map<&'static str, &'static str> = phf::phf_map! {
     "daily_closed" => "Today's puzzle is already closed",
     "attempts_exhausted" => "Out of attempts: press R to restart",
     "verdict_collapsed" => "THE STRUCTURE FELL",
+    "verdict_perfect" => "PERFECT DEMOLITION",
     "verdict_standing" => "THE STRUCTURE IS STILL STANDING",
     "verdict_wrong_blocks" => "IT FELL, BUT YOU PICKED BLOCKS THAT DIDN'T HOLD IT",
     "verdict_not_fallen" => "RIGHT BLOCKS, BUT IT DIDN'T COME DOWN",
@@ -1593,6 +1595,7 @@ struct Game {
     phase: Phase,
     next_phase: Phase,
     collapsed: bool,
+    perfect: bool,
     last_attempt_done: bool,
     last_feedback: [Feedback; SOLUTION_LEN],
     sim: Sim,
@@ -1632,6 +1635,7 @@ impl Game {
             phase: Phase::Planning,
             next_phase: Phase::Planning,
             collapsed: false,
+            perfect: false,
             last_attempt_done: false,
             last_feedback: [Feedback::Gray; SOLUTION_LEN],
             sim: Sim { next: 0, timer: 0.0, post: 0.0 },
@@ -1745,8 +1749,10 @@ impl Game {
 
     fn finish_attempt(&mut self) {
         let feedback = evaluate(self.level(), &self.sim_guess);
-        let bloques_correctos = !feedback.iter().any(|f| *f == Feedback::Gray);
-        let won = self.collapsed && bloques_correctos;
+        let target = target_blocks_for(self.level());
+        let perfect_guess = self.sim_guess.iter().zip(target.iter()).all(|(a, b)| a == b);
+        let won = self.collapsed;
+        let perfect = won && perfect_guess;
         let guess = self.sim_guess;
         let exhausted = {
             let st = self.state_mut();
@@ -1754,6 +1760,7 @@ impl Game {
             st.attempts_used >= MAX_ATTEMPTS
         };
         self.last_feedback = feedback;
+        self.perfect = perfect;
         self.selection.clear();
 
         self.reveal_row = Some(self.state().history.len() - 1);
@@ -1810,6 +1817,8 @@ impl Game {
         self.flashes.clear();
         self.acc = 0.0;
         self.shake = 0.0;
+        self.collapsed = false;
+        self.perfect = false;
     }
 
 
@@ -2481,10 +2490,10 @@ impl Game {
             && self.last_attempt_done
         {
             let correct = !self.last_feedback.iter().any(|f| *f == Feedback::Gray);
-            let (txt, color) = if self.collapsed && correct {
-                (tr("verdict_collapsed"), C_GREEN_BORDER)
+            let (txt, color) = if self.collapsed && self.perfect {
+                (tr("verdict_perfect"), C_GREEN_BORDER)
             } else if self.collapsed {
-                (tr("verdict_wrong_blocks"), C_YELLOW_BORDER)
+                (tr("verdict_collapsed"), C_GREEN_BORDER)
             } else if correct {
                 (tr("verdict_not_fallen"), C_YELLOW_BORDER)
             } else {
@@ -2998,7 +3007,7 @@ mod tests {
 
     #[test]
     fn el_feedback_describe_el_papel_del_bloque() {
-        let level = &LEVELS[0]; // LA TORRE: cadena A-E + sueltos F,G,H
+        let level = &LEVELS[0];
         let guess = ['A', 'D', 'E', 'F', 'H'];
         let fb = evaluate(level, &guess);
         assert_eq!(fb[0], Feedback::Green, "A sostiene a B: es llave");
@@ -3282,26 +3291,23 @@ mod tests {
     }
 
     #[test]
-    fn no_se_gana_con_bloques_incorrectos() {
+    fn no_set_incorrecto_es_perfecto() {
         for level in LEVELS {
             let ids: Vec<char> = level.blocks.iter().map(|b| b.id).collect();
-            let core = core_blocks(level);
+            let target = target_blocks_for(level);
 
             let mut subs: Vec<Vec<usize>> = Vec::new();
             let mut cur = Vec::new();
             subsets(ids.len(), SOLUTION_LEN, 0, &mut cur, &mut subs);
 
-            let mut colapsan_mal = 0usize;
             for s in &subs {
                 let mut guess = ['A'; SOLUTION_LEN];
                 for (i, j) in s.iter().enumerate() {
                     guess[i] = ids[*j];
                 }
-                if guess.iter().all(|g| core.contains(g)) {
-                    continue; // esta es la respuesta correcta
+                if guess.iter().zip(target.iter()).all(|(a, b)| a == b) {
+                    continue;
                 }
-                let fb = evaluate(level, &guess);
-                let bloques_correctos = !fb.iter().any(|f| *f == Feedback::Gray);
                 let mut world = World::new(level);
                 settle(&mut world, EXPLODE_DELAY);
                 for i in 0..SOLUTION_LEN {
@@ -3310,19 +3316,50 @@ mod tests {
                 }
                 settle(&mut world, SIM_TAIL);
                 let colapso = world.structure_collapsed(level);
+                let perfect = colapso
+                    && guess.iter().zip(target.iter()).all(|(a, b)| a == b);
                 assert!(
-                    !(colapso && bloques_correctos),
-                    "{}: un set incorrecto {:?} ganaria (colapso={} correctos={})",
+                    !perfect,
+                    "{}: un set incorrecto {:?} seria perfecto",
                     level.name,
-                    guess.iter().collect::<String>(),
-                    colapso,
-                    bloques_correctos
+                    guess.iter().collect::<String>()
                 );
-                if colapso {
-                    colapsan_mal += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn colapso_bruto_es_victoria_normal() {
+        for level in LEVELS {
+            let ids: Vec<char> = level.blocks.iter().map(|b| b.id).collect();
+            let target = target_blocks_for(level);
+
+            let mut subs: Vec<Vec<usize>> = Vec::new();
+            let mut cur = Vec::new();
+            subsets(ids.len(), SOLUTION_LEN, 0, &mut cur, &mut subs);
+
+            let mut hay_colapso_bruto = false;
+            for s in &subs {
+                let mut guess = ['A'; SOLUTION_LEN];
+                for (i, j) in s.iter().enumerate() {
+                    guess[i] = ids[*j];
+                }
+                if guess.iter().zip(target.iter()).all(|(a, b)| a == b) {
+                    continue;
+                }
+                let mut world = World::new(level);
+                settle(&mut world, EXPLODE_DELAY);
+                for i in 0..SOLUTION_LEN {
+                    world.detonate(guess[i]);
+                    settle(&mut world, EXPLODE_INTERVAL);
+                }
+                settle(&mut world, SIM_TAIL);
+                if world.structure_collapsed(level) {
+                    hay_colapso_bruto = true;
+                    break;
                 }
             }
-            let _ = colapsan_mal;
+            let _ = hay_colapso_bruto;
         }
     }
 
