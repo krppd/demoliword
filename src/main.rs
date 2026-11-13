@@ -1413,6 +1413,7 @@ struct LevelState {
         [Feedback; SOLUTION_LEN],
         [Feedback; SOLUTION_LEN],
         [Feedback; SOLUTION_LEN],
+        Vec<Vec<GhostBlock>>,
     )>,
 }
 
@@ -1494,6 +1495,7 @@ struct Block {
     material: u8,
 }
 
+#[derive(Clone)]
 struct GhostBlock {
     id: char,
     x: f32,
@@ -1773,6 +1775,7 @@ struct Game {
     perfect: bool,
     ghost: Option<Vec<GhostBlock>>,
     scan_timer: f32,
+    phase_snaps: Vec<Vec<GhostBlock>>,
     role_at_start: [Feedback; SOLUTION_LEN],
     role_at_detonation: [Feedback; SOLUTION_LEN],
     last_attempt_done: bool,
@@ -1817,6 +1820,7 @@ impl Game {
             perfect: false,
             ghost: None,
             scan_timer: 0.0,
+            phase_snaps: Vec::new(),
             role_at_start: [Feedback::Gray; SOLUTION_LEN],
             role_at_detonation: [Feedback::Gray; SOLUTION_LEN],
             last_attempt_done: false,
@@ -1922,6 +1926,7 @@ impl Game {
         self.progress.consume_attempt();
         self.phase = Phase::Simulating;
         self.sim = Sim { next: 0, timer: EXPLODE_DELAY, post: SIM_TAIL };
+        self.phase_snaps = Vec::new();
         self.acc = 0.0;
         emit_sound(3);
     }
@@ -1940,8 +1945,9 @@ impl Game {
         let exhausted = {
             let start_roles = self.role_at_start;
             let det_roles = self.role_at_detonation;
+            let snaps = self.phase_snaps.clone();
             let st = self.state_mut();
-            st.history.push((guess, feedback, start_roles, det_roles));
+            st.history.push((guess, feedback, start_roles, det_roles, snaps));
             st.attempts_used >= MAX_ATTEMPTS
         };
         self.last_feedback = feedback;
@@ -1983,6 +1989,7 @@ impl Game {
         self.last_letter = None;
         self.ghost = None;
         self.scan_timer = 0.0;
+        self.phase_snaps = Vec::new();
         self.rebuild();
     }
 
@@ -2001,6 +2008,7 @@ impl Game {
         self.last_letter = None;
         self.ghost = None;
         self.scan_timer = 0.0;
+        self.phase_snaps = Vec::new();
         self.rebuild();
     }
 
@@ -2015,6 +2023,7 @@ impl Game {
         self.perfect = false;
         self.ghost = None;
         self.scan_timer = 0.0;
+        self.phase_snaps = Vec::new();
         self.role_at_start = [Feedback::Gray; SOLUTION_LEN];
         self.role_at_detonation = [Feedback::Gray; SOLUTION_LEN];
     }
@@ -2118,6 +2127,8 @@ impl Game {
                             for i in 0..SOLUTION_LEN {
                                 self.role_at_start[i] = live_feedback(&self.world, self.sim_guess[i]);
                             }
+                        } else {
+                            self.phase_snaps.push(self.world.ghost_snapshot());
                         }
                         self.role_at_detonation[self.sim.next] =
                             live_feedback(&self.world, self.sim_guess[self.sim.next]);
@@ -2131,6 +2142,7 @@ impl Game {
                 } else {
                     self.sim.post -= dt;
                     if self.sim.post <= 0.0 {
+                        self.phase_snaps.push(self.world.ghost_snapshot());
                         self.collapsed = self.world.structure_collapsed(self.level());
                         self.last_attempt_done = true;
                         self.finish_attempt();
@@ -2295,6 +2307,7 @@ impl Game {
         if self.scan_timer > 0.0 {
             self.draw_scan(shake);
         }
+        self.draw_hover_preview();
         self.draw_particles(shake);
         self.draw_flashes(shake);
 
@@ -2550,6 +2563,38 @@ impl Game {
         }
         let txt = format!("SCAN {:.1}s", self.scan_timer);
         text_center(&txt, VIEW_W / 2.0, 560.0, 16.0, Color { r: 1.0, g: 0.6, b: 0.2, a: 0.9 });
+    }
+
+    fn draw_hover_preview(&self) {
+        let (mx, my) = mouse_position();
+        for row in 0..self.state().history.len() {
+            let cy = GY0 + row as f32 * ROW_PITCH + CELL * 0.5;
+            for col in 0..SOLUTION_LEN {
+                let cell_cx = GX0 + col as f32 * (CELL + CELL_GAP) + CELL * 0.5;
+                let half = CELL * 0.5;
+                if mx >= cell_cx - half
+                    && mx <= cell_cx + half
+                    && my >= cy - half
+                    && my <= cy + half
+                {
+                    let snaps = &self.state().history[row].4;
+                    if col < snaps.len() {
+                        for g in &snaps[col] {
+                            let (sx, sy) = w2s(g.x, g.y);
+                            let w = g.hx * 2.0 * PPM;
+                            let h = g.hy * 2.0 * PPM;
+                            let fill = Color { r: 0.5, g: 0.8, b: 1.0, a: 0.32 };
+                            let params = DrawRectangleParams {
+                                offset: vec2(0.5, 0.5),
+                                rotation: g.angle,
+                                color: fill,
+                            };
+                            draw_rectangle_ex(sx, sy, w, h, params);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn draw_block_detail(
@@ -2925,7 +2970,11 @@ impl Game {
                 let cell_cx = GX0 + col as f32 * (CELL + CELL_GAP) + CELL * 0.5;
 
                 if row < self.state().history.len() {
-                    let (guess, feedback, start_roles, det_roles) = self.state().history[row];
+                    let entry = &self.state().history[row];
+                    let guess = entry.0;
+                    let feedback = entry.1;
+                    let start_roles = entry.2;
+                    let det_roles = entry.3;
                     let (_, border) = feedback_style(feedback[col]);
 
                     let p = if self.reveal_row == Some(row) {
@@ -3533,6 +3582,7 @@ mod tests {
             [Feedback::Gray; SOLUTION_LEN],
             [Feedback::Gray; SOLUTION_LEN],
             [Feedback::Gray; SOLUTION_LEN],
+            Vec::new(),
         ));
 
         p.restart();
@@ -3563,7 +3613,7 @@ mod tests {
         p.state_mut().attempts_used = 4;
         p.state_mut()
             .history
-            .push((['A', 'B', 'C', 'D', 'E'], [Feedback::Gray; SOLUTION_LEN], [Feedback::Gray; SOLUTION_LEN], [Feedback::Gray; SOLUTION_LEN]));
+            .push((['A', 'B', 'C', 'D', 'E'], [Feedback::Gray; SOLUTION_LEN], [Feedback::Gray; SOLUTION_LEN], [Feedback::Gray; SOLUTION_LEN], Vec::new()));
 
         p.reset_daily(0);
         assert_eq!(p.state().attempts_used, 0);
@@ -3577,7 +3627,7 @@ mod tests {
         p.states[other].attempts_used = 2;
         p.states[other]
             .history
-            .push((['A', 'B', 'C', 'D', 'E'], [Feedback::Gray; SOLUTION_LEN], [Feedback::Gray; SOLUTION_LEN], [Feedback::Gray; SOLUTION_LEN]));
+            .push((['A', 'B', 'C', 'D', 'E'], [Feedback::Gray; SOLUTION_LEN], [Feedback::Gray; SOLUTION_LEN], [Feedback::Gray; SOLUTION_LEN], Vec::new()));
 
         p.reset_daily(0);
         assert_eq!(p.states[other].attempts_used, 0, "quedo progreso del dia viejo");
