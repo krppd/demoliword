@@ -1383,6 +1383,15 @@ struct Block {
     tint: f32,
 }
 
+struct GhostBlock {
+    id: char,
+    x: f32,
+    y: f32,
+    angle: f32,
+    hx: f32,
+    hy: f32,
+}
+
 struct World {
     pipeline: PhysicsPipeline,
     integration_parameters: IntegrationParameters,
@@ -1557,6 +1566,28 @@ impl World {
         }
         true
     }
+
+    fn ghost_snapshot(&self) -> Vec<GhostBlock> {
+        let mut out = Vec::new();
+        for b in &self.blocks {
+            if !b.alive {
+                continue;
+            }
+            let Some(body) = self.bodies.get(b.handle) else {
+                continue;
+            };
+            let p = body.translation();
+            out.push(GhostBlock {
+                id: b.id,
+                x: p.x,
+                y: p.y,
+                angle: body.rotation().angle(),
+                hx: b.hx,
+                hy: b.hy,
+            });
+        }
+        out
+    }
 }
 
 fn level_peak_height(level: &Level) -> f32 {
@@ -1596,6 +1627,7 @@ struct Game {
     next_phase: Phase,
     collapsed: bool,
     perfect: bool,
+    ghost: Option<Vec<GhostBlock>>,
     last_attempt_done: bool,
     last_feedback: [Feedback; SOLUTION_LEN],
     sim: Sim,
@@ -1636,6 +1668,7 @@ impl Game {
             next_phase: Phase::Planning,
             collapsed: false,
             perfect: false,
+            ghost: None,
             last_attempt_done: false,
             last_feedback: [Feedback::Gray; SOLUTION_LEN],
             sim: Sim { next: 0, timer: 0.0, post: 0.0 },
@@ -1761,6 +1794,11 @@ impl Game {
         };
         self.last_feedback = feedback;
         self.perfect = perfect;
+        if !won {
+            self.ghost = Some(self.world.ghost_snapshot());
+        } else {
+            self.ghost = None;
+        }
         self.selection.clear();
 
         self.reveal_row = Some(self.state().history.len() - 1);
@@ -1791,6 +1829,7 @@ impl Game {
         self.reveal_t = 0.0;
         self.select_t = 99.0;
         self.last_letter = None;
+        self.ghost = None;
         self.rebuild();
     }
 
@@ -1807,6 +1846,7 @@ impl Game {
         self.reveal_t = 0.0;
         self.select_t = 99.0;
         self.last_letter = None;
+        self.ghost = None;
         self.rebuild();
     }
 
@@ -1819,6 +1859,7 @@ impl Game {
         self.shake = 0.0;
         self.collapsed = false;
         self.perfect = false;
+        self.ghost = None;
     }
 
 
@@ -2077,6 +2118,9 @@ impl Game {
 
         let shake = self.shake_offset();
         self.draw_blocks(shake);
+        if self.ghost.is_some() && (is_key_down(KeyCode::Space) || is_key_down(KeyCode::Tab)) {
+            self.draw_ghost();
+        }
         self.draw_particles(shake);
         self.draw_flashes(shake);
 
@@ -2263,6 +2307,33 @@ impl Game {
             let letter = block.id.to_string();
             let size = (h * 0.45).clamp(18.0, 40.0);
             text_center(&letter, sx, sy + size * 0.36, size, C_INK);
+        }
+    }
+
+    fn draw_ghost(&self) {
+        let Some(ghost) = &self.ghost else {
+            return;
+        };
+        for g in ghost {
+            let (sx, sy) = w2s(g.x, g.y);
+            let w = g.hx * 2.0 * PPM;
+            let h = g.hy * 2.0 * PPM;
+            let fill = Color { r: 0.9, g: 0.9, b: 0.9, a: 0.28 };
+            let border = Color { r: 0.6, g: 0.6, b: 0.6, a: 0.5 };
+            let params = DrawRectangleParams {
+                offset: vec2(0.5, 0.5),
+                rotation: g.angle,
+                color: fill,
+            };
+            draw_rectangle_ex(sx, sy, w, h, params);
+            draw_rectangle_lines_ex(sx, sy, w, h, 1.5, DrawRectangleParams {
+                offset: vec2(0.5, 0.5),
+                rotation: g.angle,
+                color: border,
+            });
+            let letter = g.id.to_string();
+            let size = (h * 0.45).clamp(18.0, 40.0);
+            text_center(&letter, sx, sy + size * 0.36, size, Color { r: 0.3, g: 0.3, b: 0.3, a: 0.6 });
         }
     }
 
