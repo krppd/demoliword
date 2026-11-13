@@ -185,6 +185,110 @@ fn holds_transitively(level: &Level, id: char, target: char) -> bool {
     false
 }
 
+fn live_block_specs(world: &World) -> Vec<BlockSpec> {
+    let mut out = Vec::new();
+    for b in &world.blocks {
+        if !b.alive {
+            continue;
+        }
+        let Some(body) = world.bodies.get(b.handle) else {
+            continue;
+        };
+        let p = body.translation();
+        out.push(BlockSpec {
+            id: b.id,
+            x: p.x,
+            y: p.y,
+            hx: b.hx,
+            hy: b.hy,
+        });
+    }
+    out
+}
+
+fn structural_blocks_live(world: &World) -> Vec<char> {
+    let specs = live_block_specs(world);
+    if specs.is_empty() {
+        return Vec::new();
+    }
+    let crown = specs
+        .iter()
+        .max_by(|a, b| (a.y + a.hy).partial_cmp(&(b.y + b.hy)).unwrap())
+        .map(|b| b.id)
+        .unwrap_or('A');
+
+    let mut core = vec![crown];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for b in &specs {
+            if core.contains(&b.id) {
+                continue;
+            }
+            let linked = core.iter().any(|other| {
+                let ob = specs.iter().find(|x| x.id == *other).unwrap();
+                supports(ob, b) || supports(b, ob)
+            });
+            if linked {
+                core.push(b.id);
+                changed = true;
+            }
+        }
+    }
+    core
+}
+
+fn holds_transitively_live(specs: &[BlockSpec], id: char, target: char) -> bool {
+    let mut frontier = vec![id];
+    let mut visited: Vec<char> = vec![id];
+    while let Some(cur) = frontier.pop() {
+        let Some(cb) = specs.iter().find(|x| x.id == cur) else {
+            continue;
+        };
+        for other in specs.iter() {
+            if other.id == cur || visited.contains(&other.id) {
+                continue;
+            }
+            if !supports(cb, other) {
+                continue;
+            }
+            if other.id == target {
+                return true;
+            }
+            visited.push(other.id);
+            frontier.push(other.id);
+        }
+    }
+    false
+}
+
+fn block_role_live(world: &World, id: char) -> Option<bool> {
+    let specs = live_block_specs(world);
+    if !specs.iter().any(|x| x.id == id) {
+        return None;
+    }
+    let structural = structural_blocks_live(world);
+    if !structural.contains(&id) {
+        return None;
+    }
+    let holds_something = structural
+        .iter()
+        .any(|other| *other != id && holds_transitively_live(&specs, id, *other));
+    if holds_something {
+        Some(true)
+    } else {
+        Some(false)
+    }
+}
+
+fn live_feedback(world: &World, id: char) -> Feedback {
+    match block_role_live(world, id) {
+        Some(true) => Feedback::Green,
+        Some(false) => Feedback::Yellow,
+        None => Feedback::Gray,
+    }
+}
+
 fn key_blocks(level: &Level) -> Vec<char> {
     let structural = structural_blocks(level);
     structural
@@ -1304,7 +1408,12 @@ struct Sim {
 #[derive(Clone, Default)]
 struct LevelState {
     attempts_used: usize,
-    history: Vec<([char; SOLUTION_LEN], [Feedback; SOLUTION_LEN])>,
+    history: Vec<(
+        [char; SOLUTION_LEN],
+        [Feedback; SOLUTION_LEN],
+        [Feedback; SOLUTION_LEN],
+        [Feedback; SOLUTION_LEN],
+    )>,
 }
 
 struct Progress {
@@ -1628,6 +1737,8 @@ struct Game {
     collapsed: bool,
     perfect: bool,
     ghost: Option<Vec<GhostBlock>>,
+    role_at_start: [Feedback; SOLUTION_LEN],
+    role_at_detonation: [Feedback; SOLUTION_LEN],
     last_attempt_done: bool,
     last_feedback: [Feedback; SOLUTION_LEN],
     sim: Sim,
@@ -1669,6 +1780,8 @@ impl Game {
             collapsed: false,
             perfect: false,
             ghost: None,
+            role_at_start: [Feedback::Gray; SOLUTION_LEN],
+            role_at_detonation: [Feedback::Gray; SOLUTION_LEN],
             last_attempt_done: false,
             last_feedback: [Feedback::Gray; SOLUTION_LEN],
             sim: Sim { next: 0, timer: 0.0, post: 0.0 },
@@ -1788,8 +1901,10 @@ impl Game {
         let perfect = won && perfect_guess;
         let guess = self.sim_guess;
         let exhausted = {
+            let start_roles = self.role_at_start;
+            let det_roles = self.role_at_detonation;
             let st = self.state_mut();
-            st.history.push((guess, feedback));
+            st.history.push((guess, feedback, start_roles, det_roles));
             st.attempts_used >= MAX_ATTEMPTS
         };
         self.last_feedback = feedback;
@@ -1860,6 +1975,8 @@ impl Game {
         self.collapsed = false;
         self.perfect = false;
         self.ghost = None;
+        self.role_at_start = [Feedback::Gray; SOLUTION_LEN];
+        self.role_at_detonation = [Feedback::Gray; SOLUTION_LEN];
     }
 
 
@@ -1956,6 +2073,13 @@ impl Game {
                 if self.sim.next < SOLUTION_LEN {
                     self.sim.timer -= dt;
                     if self.sim.timer <= 0.0 {
+                        if self.sim.next == 0 {
+                            for i in 0..SOLUTION_LEN {
+                                self.role_at_start[i] = live_feedback(&self.world, self.sim_guess[i]);
+                            }
+                        }
+                        self.role_at_detonation[self.sim.next] =
+                            live_feedback(&self.world, self.sim_guess[self.sim.next]);
                         let ch = self.sim_guess[self.sim.next];
                         if let Some((wx, wy)) = self.world.detonate(ch) {
                             self.spawn_explosion(wx, wy);
@@ -2710,8 +2834,8 @@ impl Game {
                 let cell_cx = GX0 + col as f32 * (CELL + CELL_GAP) + CELL * 0.5;
 
                 if row < self.state().history.len() {
-                    let (guess, feedback) = self.state().history[row];
-                    let (fill, border) = feedback_style(feedback[col]);
+                    let (guess, feedback, start_roles, det_roles) = self.state().history[row];
+                    let (_, border) = feedback_style(feedback[col]);
 
                     let p = if self.reveal_row == Some(row) {
                         reveal_progress(self.reveal_t, col)
@@ -2726,7 +2850,16 @@ impl Game {
 
                     let pop = 1.0 + 0.26 * (1.0 - p).powf(2.0);
                     let size = CELL * pop;
-                    draw_cell(cell_cx, cy, size, fill, border);
+                    let half = size * 0.5;
+                    let (fill_start, _) = feedback_style(start_roles[col]);
+                    let (fill_det, _) = feedback_style(det_roles[col]);
+                    let tl = (cell_cx - half, cy - half);
+                    let tr = (cell_cx + half, cy - half);
+                    let bl = (cell_cx - half, cy + half);
+                    let br = (cell_cx + half, cy + half);
+                    draw_triangle(vec2(tl.0, tl.1), vec2(tr.0, tr.1), vec2(bl.0, bl.1), fill_start);
+                    draw_triangle(vec2(tr.0, tr.1), vec2(br.0, br.1), vec2(bl.0, bl.1), fill_det);
+                    draw_rectangle_lines(cell_cx - half, cy - half, size, size, 2.0, border);
 
                     if p < 1.0 {
                         draw_cell_glow(
@@ -3307,6 +3440,8 @@ mod tests {
         p.state_mut().history.push((
             ['A', 'B', 'C', 'D', 'E'],
             [Feedback::Gray; SOLUTION_LEN],
+            [Feedback::Gray; SOLUTION_LEN],
+            [Feedback::Gray; SOLUTION_LEN],
         ));
 
         p.restart();
@@ -3337,7 +3472,7 @@ mod tests {
         p.state_mut().attempts_used = 4;
         p.state_mut()
             .history
-            .push((['A', 'B', 'C', 'D', 'E'], [Feedback::Gray; SOLUTION_LEN]));
+            .push((['A', 'B', 'C', 'D', 'E'], [Feedback::Gray; SOLUTION_LEN], [Feedback::Gray; SOLUTION_LEN], [Feedback::Gray; SOLUTION_LEN]));
 
         p.reset_daily(0);
         assert_eq!(p.state().attempts_used, 0);
@@ -3351,7 +3486,7 @@ mod tests {
         p.states[other].attempts_used = 2;
         p.states[other]
             .history
-            .push((['A', 'B', 'C', 'D', 'E'], [Feedback::Gray; SOLUTION_LEN]));
+            .push((['A', 'B', 'C', 'D', 'E'], [Feedback::Gray; SOLUTION_LEN], [Feedback::Gray; SOLUTION_LEN], [Feedback::Gray; SOLUTION_LEN]));
 
         p.reset_daily(0);
         assert_eq!(p.states[other].attempts_used, 0, "quedo progreso del dia viejo");
