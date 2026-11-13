@@ -1488,6 +1488,7 @@ struct Block {
     hx: f32,
     hy: f32,
     handle: RigidBodyHandle,
+    collider: ColliderHandle,
     alive: bool,
     tint: f32,
 }
@@ -1515,6 +1516,7 @@ struct World {
     ccd_solver: CCDSolver,
     blocks: Vec<Block>,
     _ground: RigidBodyHandle,
+    contact_pressure: Vec<f32>,
 }
 
 impl World {
@@ -1547,13 +1549,14 @@ impl World {
                 .friction(0.85)
                 .restitution(0.0)
                 .build();
-            colliders.insert_with_parent(collider, handle, &mut bodies);
+            let collider_handle = colliders.insert_with_parent(collider, handle, &mut bodies);
 
             blocks.push(Block {
                 id: spec.id,
                 hx: spec.hx,
                 hy: spec.hy,
                 handle,
+                collider: collider_handle,
                 alive: true,
                 tint: hash01(i as u32 * 7 + 3),
             });
@@ -1573,6 +1576,7 @@ impl World {
             ccd_solver: CCDSolver::new(),
             blocks,
             _ground: ground,
+            contact_pressure: vec![0.0; level.blocks.len()],
         }
     }
 
@@ -1592,6 +1596,23 @@ impl World {
             &(),
             &(),
         );
+        for p in self.contact_pressure.iter_mut() {
+            *p = 0.0;
+        }
+        for pair in self.narrow_phase.contact_pairs() {
+            let mag = pair.total_impulse_magnitude();
+            if mag <= 0.0 {
+                continue;
+            }
+            for (i, b) in self.blocks.iter().enumerate() {
+                if !b.alive {
+                    continue;
+                }
+                if b.collider == pair.collider1 || b.collider == pair.collider2 {
+                    self.contact_pressure[i] += mag;
+                }
+            }
+        }
     }
 
     fn detonate(&mut self, id: char) -> Option<(f32, f32)> {
@@ -1737,6 +1758,7 @@ struct Game {
     collapsed: bool,
     perfect: bool,
     ghost: Option<Vec<GhostBlock>>,
+    scan_timer: f32,
     role_at_start: [Feedback; SOLUTION_LEN],
     role_at_detonation: [Feedback; SOLUTION_LEN],
     last_attempt_done: bool,
@@ -1780,6 +1802,7 @@ impl Game {
             collapsed: false,
             perfect: false,
             ghost: None,
+            scan_timer: 0.0,
             role_at_start: [Feedback::Gray; SOLUTION_LEN],
             role_at_detonation: [Feedback::Gray; SOLUTION_LEN],
             last_attempt_done: false,
@@ -1945,6 +1968,7 @@ impl Game {
         self.select_t = 99.0;
         self.last_letter = None;
         self.ghost = None;
+        self.scan_timer = 0.0;
         self.rebuild();
     }
 
@@ -1962,6 +1986,7 @@ impl Game {
         self.select_t = 99.0;
         self.last_letter = None;
         self.ghost = None;
+        self.scan_timer = 0.0;
         self.rebuild();
     }
 
@@ -1975,6 +2000,7 @@ impl Game {
         self.collapsed = false;
         self.perfect = false;
         self.ghost = None;
+        self.scan_timer = 0.0;
         self.role_at_start = [Feedback::Gray; SOLUTION_LEN];
         self.role_at_detonation = [Feedback::Gray; SOLUTION_LEN];
     }
@@ -2044,6 +2070,7 @@ impl Game {
             self.toast_timer -= dt;
         }
         self.shake = (self.shake - dt * 45.0).max(0.0);
+        self.scan_timer = (self.scan_timer - dt).max(0.0);
         self.select_t += dt;
         if self.reveal_row.is_some() {
             self.reveal_t += dt;
@@ -2140,6 +2167,12 @@ impl Game {
         if is_key_pressed(KeyCode::R) {
             self.restart();
             return;
+        }
+        if is_key_pressed(KeyCode::S) {
+            for _ in 0..15 {
+                self.world.step();
+            }
+            self.scan_timer = 2.0;
         }
 
         if is_key_pressed(KeyCode::Right) {
@@ -2244,6 +2277,9 @@ impl Game {
         self.draw_blocks(shake);
         if self.ghost.is_some() && (is_key_down(KeyCode::Space) || is_key_down(KeyCode::Tab)) {
             self.draw_ghost();
+        }
+        if self.scan_timer > 0.0 {
+            self.draw_scan(shake);
         }
         self.draw_particles(shake);
         self.draw_flashes(shake);
@@ -2459,6 +2495,42 @@ impl Game {
             let size = (h * 0.45).clamp(18.0, 40.0);
             text_center(&letter, sx, sy + size * 0.36, size, Color { r: 0.3, g: 0.3, b: 0.3, a: 0.6 });
         }
+    }
+
+    fn draw_scan(&self, shake: (f32, f32)) {
+        for pair in self.world.narrow_phase.contact_pairs() {
+            let mag = pair.total_impulse_magnitude();
+            if mag <= 0.0 {
+                continue;
+            }
+            let b1 = self.world.blocks.iter().find(|b| b.collider == pair.collider1);
+            let b2 = self.world.blocks.iter().find(|b| b.collider == pair.collider2);
+            let (Some(bb1), Some(bb2)) = (b1, b2) else {
+                continue;
+            };
+            let Some(body1) = self.world.bodies.get(bb1.handle) else {
+                continue;
+            };
+            let Some(body2) = self.world.bodies.get(bb2.handle) else {
+                continue;
+            };
+            let p1 = body1.translation();
+            let p2 = body2.translation();
+            let (sx1, sy1) = w2s(p1.x, p1.y);
+            let (sx2, sy2) = w2s(p2.x, p2.y);
+            let mx = (sx1 + sx2) * 0.5 + shake.0;
+            let my = (sy1 + sy2) * 0.5 + shake.1;
+            let t = (mag / 8.0).clamp(0.0, 1.0);
+            let color = Color {
+                r: 0.9 + 0.1 * t,
+                g: 0.5 * (1.0 - t),
+                b: 0.1,
+                a: 0.55 + 0.35 * t,
+            };
+            draw_circle(mx, my, 5.0 + 4.0 * t, color);
+        }
+        let txt = format!("SCAN {:.1}s", self.scan_timer);
+        text_center(&txt, VIEW_W / 2.0, 560.0, 16.0, Color { r: 1.0, g: 0.6, b: 0.2, a: 0.9 });
     }
 
     fn draw_block_detail(
