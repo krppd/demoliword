@@ -1491,6 +1491,7 @@ struct Block {
     collider: ColliderHandle,
     alive: bool,
     tint: f32,
+    material: u8,
 }
 
 struct GhostBlock {
@@ -1539,15 +1540,27 @@ impl World {
 
         let mut blocks = Vec::with_capacity(level.blocks.len());
         for (i, spec) in level.blocks.iter().enumerate() {
+            let material: u8 = if spec.hx >= spec.hy * 2.0 {
+                0
+            } else if spec.hy >= spec.hx * 1.5 {
+                1
+            } else {
+                2
+            };
+            let (density, friction, restitution) = match material {
+                0 => (2.5, 0.4, 0.05),
+                1 => (1.2, 0.95, 0.0),
+                _ => (0.9, 0.2, 0.15),
+            };
             let body = RigidBodyBuilder::dynamic()
                 .translation(Vector::new(spec.x, spec.y))
                 .linear_damping(0.05)
                 .build();
             let handle = bodies.insert(body);
             let collider = ColliderBuilder::cuboid(spec.hx, spec.hy)
-                .density(1.1)
-                .friction(0.85)
-                .restitution(0.0)
+                .density(density)
+                .friction(friction)
+                .restitution(restitution)
                 .build();
             let collider_handle = colliders.insert_with_parent(collider, handle, &mut bodies);
 
@@ -1559,6 +1572,7 @@ impl World {
                 collider: collider_handle,
                 alive: true,
                 tint: hash01(i as u32 * 7 + 3),
+                material,
             });
         }
 
@@ -2447,8 +2461,13 @@ impl Game {
             let w = block.hx * 2.0 * PPM;
             let h = block.hy * 2.0 * PPM;
             let k = 0.90 + block.tint * 0.16;
-            let fill = Color { r: 0.72 * k, g: 0.55 * k, b: 0.33 * k, a: 1.0 };
-            let border = Color { r: 0.36 * k, g: 0.23 * k, b: 0.12 * k, a: 0.95 };
+            let (br, bg, bb) = match block.material {
+                0 => (0.55, 0.62, 0.72),
+                1 => (0.72, 0.40, 0.28),
+                _ => (0.78, 0.78, 0.82),
+            };
+            let fill = Color { r: br * k, g: bg * k, b: bb * k, a: 1.0 };
+            let border = Color { r: br * 0.5 * k, g: bg * 0.5 * k, b: bb * 0.5 * k, a: 0.95 };
 
             let params = DrawRectangleParams {
                 offset: vec2(0.5, 0.5),
